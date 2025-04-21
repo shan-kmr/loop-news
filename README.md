@@ -10,7 +10,7 @@ News Timeline is a Flask-based web application that allows you to search for new
 
 - Timeline view of news articles sorted by recency
 - Topic-based grouping of related articles
-- AI-powered daily summaries using Meta's Llama 3.2 model
+- AI-powered daily summaries using OpenAI GPT-4.1 Nano (with Llama 3.2 as an optional alternative)
 - History tab to view past searches
 - Intelligent caching to reduce API calls and load times
 
@@ -20,7 +20,7 @@ News Timeline is a Flask-based web application that allows you to search for new
 
 - Python 3.7+
 - [Brave News API](https://brave.com/search/api/) key
-- [Hugging Face](https://huggingface.co/) account with access to Llama models
+- [OpenAI API key](https://platform.openai.com/) (default) or [Hugging Face](https://huggingface.co/) account with access to Llama models (optional)
 
 ### Setup
 
@@ -79,11 +79,13 @@ The similarity threshold controls how aggressively articles are grouped:
 - **Medium (0.3)**: Balanced grouping
 - **High (0.4)**: Fewer groups with more articles per group
 
-### AI Summaries with Llama 3.2
+### AI-Powered Summaries
 
-Each day's articles are summarized using Meta's Llama 3.2 model:
+Each day's articles are summarized using an AI model. By default, the application uses OpenAI's GPT-4.1 Nano, but it can also use Meta's Llama 3.2 model.
 
-- **Model**: meta-llama/Llama-3.2-3B-Instruct
+#### OpenAI GPT-4.1 Nano (Default)
+
+- **Model**: gpt-4.1-nano
 - **Prompt Template**:
   ```
   System: You are a helpful assistant that creates concise news summaries. 
@@ -96,7 +98,19 @@ Each day's articles are summarized using Meta's Llama 3.2 model:
   {article_texts}
   Please provide a brief summary of the main news for this day.
   ```
+- **Generation Parameters**: temperature=0.3, top_p=0.9, max_tokens=150
+
+#### Llama 3.2 (Optional Alternative)
+
+- **Model**: meta-llama/Llama-3.2-3B-Instruct
+- **Same prompt template as OpenAI**
 - **Generation Parameters**: temperature=0.3, top_p=0.9, max_new_tokens=150
+
+To switch between models, modify the `MODEL_PROVIDER` variable in the code:
+```python
+# Set to "llama" or "openai" to choose the AI model provider
+MODEL_PROVIDER = "openai"  # Change to "llama" to use Llama model
+```
 
 These summaries appear at the top of each day's section, providing a quick overview.
 
@@ -126,7 +140,7 @@ Here's how the application works behind the scenes:
 ### Initial Page Load
 
 1. Flask loads the main route (`/`)
-2. Llama model initialization starts in a background thread
+2. Model initialization starts in a background thread (OpenAI client or Llama model)
 3. If Brave API key is missing, an error is shown
 4. Default query is set to "breaking news"
 5. Search history is loaded from the local JSON file
@@ -144,7 +158,7 @@ Here's how the application works behind the scenes:
    - Brave News API is called with the search parameters
    - Results are sorted by age
    - Topic grouping is applied
-   - Summaries are generated for each day
+   - Summaries are generated for each day using the configured AI model
    - Results and summaries are cached
 
 ### Topic Grouping Process
@@ -156,7 +170,7 @@ Here's how the application works behind the scenes:
 5. Each day's articles are collected
 6. For each day without a cached summary:
    - Articles for that day are compiled
-   - Llama model generates a summary
+   - The configured AI model generates a summary
    - Summary is stored in the cache
 7. Topic groups are returned with their associated day summaries
 
@@ -187,9 +201,10 @@ See `requirements.txt` for the full list of dependencies. Key requirements:
 
 - flask
 - scikit-learn
-- transformers
-- torch
-- huggingface_hub
+- transformers (for Llama model)
+- torch (for Llama model)
+- huggingface_hub (for Llama model)
+- openai (for GPT-4.1 Nano)
 
 ## License
 

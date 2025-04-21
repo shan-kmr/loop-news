@@ -21,7 +21,7 @@ import numpy as np
 import threading
 import queue
 
-# Add dependencies for Llama model
+# Add dependencies for LLM models
 try:
     from transformers import AutoTokenizer, AutoModelForCausalLM
     import torch
@@ -31,6 +31,15 @@ except ImportError:
     print("Transformers or torch not available. To enable Llama summaries run:")
     print("pip install transformers torch huggingface_hub")
     LLAMA_AVAILABLE = False
+
+# Add dependencies for OpenAI
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    print("OpenAI package not available. To enable OpenAI summaries run:")
+    print("pip install openai")
+    OPENAI_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -46,6 +55,10 @@ brave_api = None
 # Define how long (in hours) to consider cached results valid
 CACHE_VALIDITY_HOURS = 1
 
+# Model configuration
+# Set to "llama" or "openai" to choose the AI model provider
+MODEL_PROVIDER = "openai"  # Default to OpenAI
+
 # Llama model configuration
 LLAMA_MODEL_ID = "meta-llama/Llama-3.2-3B-Instruct"
 HF_API_TOKEN = "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"
@@ -53,6 +66,19 @@ HF_API_TOKEN = "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"
 MODEL_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llama_model_cache")
 llama_model = None
 llama_tokenizer = None
+
+# OpenAI configuration
+OPENAI_API_KEY = "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"
+OPENAI_MODEL = "gpt-4.1-nano"
+
+def init_models():
+    """Initialize the models based on provider configuration"""
+    if MODEL_PROVIDER == "llama" and LLAMA_AVAILABLE:
+        init_llama_model()
+    elif MODEL_PROVIDER == "openai" and OPENAI_AVAILABLE:
+        init_openai()
+    else:
+        print(f"Warning: Selected model provider '{MODEL_PROVIDER}' is not available or invalid.")
 
 def init_llama_model():
     """Initialize the Llama model for summarization in a background thread"""
@@ -92,7 +118,66 @@ def init_llama_model():
         llama_model = None
         llama_tokenizer = None
 
+def init_openai():
+    """Initialize the OpenAI client"""
+    if not OPENAI_AVAILABLE:
+        return
+    
+    try:
+        # Set the API key
+        openai.api_key = OPENAI_API_KEY
+        print("OpenAI client initialized successfully")
+    except Exception as e:
+        print(f"Error initializing OpenAI client: {str(e)}")
+
 def summarize_daily_news(day_articles, query):
+    """Generate a summary of articles for a specific day using the configured model"""
+    if MODEL_PROVIDER == "llama":
+        return summarize_daily_news_llama(day_articles, query)
+    elif MODEL_PROVIDER == "openai":
+        return summarize_daily_news_openai(day_articles, query)
+    else:
+        return None
+
+def summarize_daily_news_openai(day_articles, query):
+    """Generate a summary of articles for a specific day using OpenAI's API"""
+    if not OPENAI_AVAILABLE:
+        return None
+    
+    try:
+        # Prepare content to summarize
+        article_texts = []
+        for article in day_articles:
+            title = article.get('title', '')
+            desc = article.get('description', '')
+            source = article.get('meta_url', {}).get('netloc', 'Unknown source')
+            article_texts.append(f"- {title}: {desc} (Source: {source})")
+        
+        all_articles_text = "\n".join(article_texts[:15])  # Limit to 15 articles to avoid token overflow
+        
+        # Create messages for the OpenAI API
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant that creates concise news summaries. Summarize the key events and topics from these news articles in about 2-3 sentences without adding any new information. Focus on identifying the main developments and common themes. Start directly with the summary content - do not use phrases like 'Here is the summary' or 'The main news is'."},
+            {"role": "user", "content": f"Here are news articles about \"{query}\" from the same day:\n\n{all_articles_text}\n\nPlease provide a brief summary of the main news for this day."}
+        ]
+        
+        # Call the OpenAI API
+        response = openai.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=150,
+            top_p=0.9
+        )
+        
+        # Extract the summary from the response
+        summary = response.choices[0].message.content.strip()
+        return summary
+    except Exception as e:
+        print(f"Error generating summary with OpenAI: {str(e)}")
+        return None
+
+def summarize_daily_news_llama(day_articles, query):
     """Generate a summary of articles for a specific day using Llama model"""
     if not LLAMA_AVAILABLE or llama_model is None or llama_tokenizer is None:
         return None
@@ -133,7 +218,7 @@ def summarize_daily_news(day_articles, query):
         summary = llama_tokenizer.decode(outputs[0][input_ids.shape[1]:], skip_special_tokens=True).strip()
         return summary
     except Exception as e:
-        print(f"Error generating summary: {str(e)}")
+        print(f"Error generating summary with Llama: {str(e)}")
         return None
 
 # Load search history from JSON file
@@ -475,8 +560,9 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
             if topic['day_summary'] is None and day not in days_needing_summaries:
                 days_needing_summaries.add(day)
         
-        # Only generate new summaries if needed and if Llama model is available
-        if days_needing_summaries and LLAMA_AVAILABLE and llama_model is not None:
+        # Only generate new summaries if needed and if models are available
+        if days_needing_summaries and ((MODEL_PROVIDER == "llama" and LLAMA_AVAILABLE and llama_model is not None) or 
+                                       (MODEL_PROVIDER == "openai" and OPENAI_AVAILABLE)):
             # Group articles by day, but only for days that need new summaries
             day_articles = {}
             for topic in topic_groups:
@@ -488,7 +574,7 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
             
             # Generate summaries only for days that need them
             for day, day_art in day_articles.items():
-                print(f"Generating new summary for day: {day}")
+                print(f"Generating new summary for day: {day} using {MODEL_PROVIDER}")
                 summary = summarize_daily_news(day_art, query)
                 day_summaries[day] = summary
                 
@@ -566,9 +652,9 @@ def format_datetime_filter(value, format='%Y-%m-%d %H:%M'):
     return value.strftime(format)
 
 if __name__ == '__main__':
-    # Initialize Llama model in background thread to avoid blocking app startup
-    if LLAMA_AVAILABLE:
-        init_thread = threading.Thread(target=init_llama_model)
+    # Initialize models in background threads to avoid blocking app startup
+    if LLAMA_AVAILABLE or OPENAI_AVAILABLE:
+        init_thread = threading.Thread(target=init_models)
         init_thread.daemon = True
         init_thread.start()
     
