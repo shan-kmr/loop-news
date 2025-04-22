@@ -243,20 +243,26 @@ def load_search_history():
 def save_search_history(history):
     history_file = get_history_file()
     try:
-        # Ensure the directory exists
-        os.makedirs(os.path.dirname(history_file), exist_ok=True)
+        # Ensure the directory exists if the path contains a directory
+        dir_name = os.path.dirname(history_file)
+        if dir_name:  # Only try to create directory if there is one
+            os.makedirs(dir_name, exist_ok=True)
         with open(history_file, 'w') as f:
             json.dump(history, f)
     except Exception as e:
         print(f"Error saving history: {e}")
 
-# Get the appropriate history file path based on login status
+# Get search history file path
 def get_history_file():
     if current_user.is_authenticated:
-        return current_user.get_history_file()
-    else:
-        # Default location for anonymous users
-        return 'search_history.json'
+        history_file = current_user.get_history_file()
+        if history_file:  # Check that we got a valid path
+            return history_file
+    
+    # Default location for anonymous users or if user path is invalid
+    default_dir = 'user_data/anonymous'
+    os.makedirs(default_dir, exist_ok=True)
+    return os.path.join(default_dir, 'search_history.json')
 
 def update_current_day_results(query, count, freshness, old_results):
     """
@@ -281,11 +287,15 @@ def update_current_day_results(query, count, freshness, old_results):
         brave_api = BraveNewsAPI(api_key=brave_api_key)
     
     try:
-        # Always use at least "pw" (past week) to ensure we get a good amount of gap-filling
-        # If the original freshness was longer (pm, py), keep it
-        refresh_freshness = freshness
-        if freshness in ['pd', 'h']:  # If original search was just past day or hours
-            refresh_freshness = 'pw'  # Use past week to fill gaps better
+        # For frequent refreshes (every 10 minutes), default to past day
+        # For longer term refreshes, use the original freshness or at least past week
+        refresh_freshness = 'pd'  # Default to past day for 10-minute refreshes
+        
+        # If the original freshness was longer (pw, pm, py), keep that for non-frequent refreshes
+        if freshness in ['pw', 'pm', 'py'] and CACHE_VALIDITY_HOURS > 24:
+            refresh_freshness = freshness  # Keep original longer freshness for non-frequent refreshes
+        
+        print(f"Using freshness '{refresh_freshness}' for refreshing '{query}' (original: {freshness})")
         
         # Get fresh results
         fresh_results = brave_api.search_news(
@@ -399,47 +409,61 @@ def index():
             needs_day_refresh = False
             
             if cached_entry and not force_refresh:
-                cached_time = datetime.fromisoformat(cached_entry['timestamp'])
-                time_diff = datetime.now() - cached_time
+                # Store current time for comparison, ensuring naive datetime (no timezone)
+                now = datetime.now()
                 
-                # Use cache if it's less than CACHE_VALIDITY_HOURS old
-                if time_diff.total_seconds() < CACHE_VALIDITY_HOURS * 3600:
-                    use_cache = True
+                try:
+                    # Parse the cached timestamp and ensure it's naive (no timezone)
+                    cached_time_str = cached_entry['timestamp']
+                    cached_time = datetime.fromisoformat(cached_time_str)
+                    # Remove timezone if present
+                    if hasattr(cached_time, 'tzinfo') and cached_time.tzinfo is not None:
+                        cached_time = cached_time.replace(tzinfo=None)
                     
-                    # Check if we need to refresh the current day's results (older than 10 minutes)
-                    if time_diff.total_seconds() > 600:  # 10 minutes in seconds
-                        needs_day_refresh = True
+                    # Calculate time difference
+                    time_diff = now - cached_time
                     
-                    results = cached_entry['results']
-                    search_time = cached_time
-                    
-                    # Check if we have cached summaries
-                    if 'day_summaries' in cached_entry:
-                        day_summaries = cached_entry['day_summaries']
-                    else:
-                        day_summaries = {}
-                    
-                    # If we need to refresh current day results
-                    if needs_day_refresh:
-                        print(f"Search is {int(time_diff.total_seconds() / 60)} minutes old. Refreshing current day results for '{query}'")
-                        updated_results = update_current_day_results(query, count, freshness, results)
+                    # Use cache if it's less than CACHE_VALIDITY_HOURS old
+                    if time_diff.total_seconds() < CACHE_VALIDITY_HOURS * 3600:
+                        use_cache = True
                         
-                        if updated_results != results:
-                            results = updated_results
-                            search_time = datetime.now()
+                        # Check if we need to refresh the current day's results (older than 10 minutes)
+                        if time_diff.total_seconds() > 600:  # 10 minutes in seconds
+                            needs_day_refresh = True
+                        
+                        results = cached_entry['results']
+                        search_time = cached_time
+                        
+                        # Check if we have cached summaries
+                        if 'day_summaries' in cached_entry:
+                            day_summaries = cached_entry['day_summaries']
+                        else:
+                            day_summaries = {}
+                        
+                        # If we need to refresh current day results
+                        if needs_day_refresh:
+                            print(f"Search is {int(time_diff.total_seconds() / 60)} minutes old. Refreshing current day results for '{query}'")
+                            updated_results = update_current_day_results(query, count, freshness, results)
                             
-                            # Update the cache with refreshed results
-                            cached_entry['results'] = results
-                            cached_entry['timestamp'] = search_time.isoformat()
-                            history[cache_key] = cached_entry
-                            save_search_history(history)
-                    else:
-                        print(f"Using cached results for '{query}' from {cached_time}")
-                    
-                    # Extract articles and sort them
-                    if results and 'results' in results:
-                        sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
-                        topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, query, day_summaries)
+                            if updated_results != results:
+                                results = updated_results
+                                search_time = datetime.now()
+                                
+                                # Update the cache with refreshed results
+                                cached_entry['results'] = results
+                                cached_entry['timestamp'] = search_time.isoformat()
+                                history[cache_key] = cached_entry
+                                save_search_history(history)
+                        else:
+                            print(f"Using cached results for '{query}' from {cached_time}, {int(time_diff.total_seconds() / 60)} minutes old")
+                        
+                        # Extract articles and sort them
+                        if results and 'results' in results:
+                            sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
+                            topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, query, day_summaries)
+                except Exception as e:
+                    print(f"Error parsing cached timestamp: {e}")
+                    use_cache = False
             
             # Make a new API call if we don't have valid cached results
             if not use_cache:
@@ -537,14 +561,19 @@ def history_item(query):
     # Load history
     history = load_search_history()
     
+    # Debug information
+    print(f"Looking for history item with query: '{query}'")
+    
     # Get list of history entries for sidebar
     history_entries = []
     for key, entry in history.items():
+        stored_query = entry['query']
         history_entries.append({
-            'query': entry['query'],
+            'query': stored_query,
             'timestamp': entry['timestamp'],
             'key': key
         })
+        print(f"History entry: '{stored_query}' with key: {key}")
     
     # Sort history by most recent first
     history_entries.sort(key=lambda x: x['timestamp'], reverse=True)
@@ -557,22 +586,29 @@ def history_item(query):
     current_query = ''
     similarity_threshold = float(request.args.get('similarity_threshold', 0.3))
     
+    # Try to find an exact match first
+    found = False
     if query:
         for key, entry in history.items():
-            if entry['query'] == query:
+            stored_query = entry['query']
+            
+            # Check for exact match
+            if stored_query == query:
+                print(f"Found exact match for query: '{query}'")
+                found = True
+                # Process the found entry
+                current_query = query
                 cached_time = datetime.fromisoformat(entry['timestamp'])
                 time_diff = datetime.now() - cached_time
-                current_query = query
-                
-                # Check if we need to refresh the current day's results (older than 10 minutes)
-                needs_day_refresh = time_diff.total_seconds() > 600  # 10 minutes in seconds
-                
                 results = entry['results']
                 search_time = cached_time
                 count = entry.get('count', 10)
                 freshness = entry.get('freshness', 'pw')
                 
-                # If results are older than 10 minutes, refresh the current day's data
+                # Check if we need to refresh
+                needs_day_refresh = time_diff.total_seconds() > 600  # 10 minutes in seconds
+                
+                # Handle refreshing and processing
                 if needs_day_refresh:
                     print(f"History item is {int(time_diff.total_seconds() / 60)} minutes old. Refreshing current day results for '{query}'")
                     updated_results = update_current_day_results(query, count, freshness, results)
@@ -586,20 +622,17 @@ def history_item(query):
                         entry['timestamp'] = search_time.isoformat()
                         save_search_history(history)
                 
-                # Check if we have cached summaries
+                # Process day summaries
                 day_summaries = entry.get('day_summaries', {})
-                
-                # If no day_summaries yet, create an empty dict but don't save back to cache
                 if day_summaries is None:
                     day_summaries = {}
                 
-                # Extract articles and sort them
+                # Process articles
                 if results and 'results' in results:
                     sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
                     topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, current_query, day_summaries)
                     
-                    # If we generated any new summaries, update the cache
-                    # First check if any summaries were actually generated
+                    # Update summaries if needed
                     new_summaries_generated = False
                     for topic in topic_groups:
                         day = topic['day_group']
@@ -608,12 +641,63 @@ def history_item(query):
                             break
                     
                     if new_summaries_generated and 'day_summaries' not in entry:
-                        # Update the cache entry with new summaries
                         entry['day_summaries'] = day_summaries
                         save_search_history(history)
-                        print(f"Updated cache with new summaries for query: {query}")
+                        print(f"Updated cache with new summaries for query: '{query}'")
                 
                 break
+    
+    # If no exact match was found, perform a new search
+    if not found:
+        print(f"No exact match found for query: '{query}'. Performing new search.")
+        try:
+            # Initialize API if needed
+            global brave_api
+            if brave_api is None:
+                brave_api_key = app.config.get("BRAVE_API_KEY")
+                if brave_api_key:
+                    brave_api = BraveNewsAPI(api_key=brave_api_key)
+                else:
+                    return render_template('error.html', error="BRAVE_API_KEY not set")
+            
+            # Default values
+            count = 10
+            freshness = 'pw'
+            
+            # Make a new API call
+            print(f"Making new API call for '{query}'")
+            results = brave_api.search_news(
+                query=query,
+                count=count,
+                freshness=freshness
+            )
+            search_time = datetime.now()
+            current_query = query
+            
+            # Process results
+            if results and 'results' in results:
+                sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
+                day_summaries = {}
+                topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, query, day_summaries)
+                
+                # Cache the results
+                cache_key = f"{query}_{count}_{freshness}"
+                history[cache_key] = {
+                    'query': query,
+                    'count': count,
+                    'freshness': freshness,
+                    'timestamp': search_time.isoformat(),
+                    'results': results,
+                    'day_summaries': day_summaries
+                }
+                save_search_history(history)
+                print(f"Cached new results for query: '{query}'")
+        except Exception as e:
+            print(f"Error performing search: {str(e)}")
+    
+    # Ensure we always have a search_time for the ticker to work
+    if search_time is None:
+        search_time = datetime.now()
     
     return render_template('index.html', 
                           query=current_query, 
@@ -1234,7 +1318,7 @@ if __name__ == '__main__':
         </div>
         <div class="tab-nav">
             <div class="tab-button {% if active_tab == 'search' %}active{% endif %}" onclick="window.location.href='/'">Search</div>
-            <div class="tab-button {% if active_tab == 'history' %}active{% endif %}" onclick="window.location.href='/history'">History</div>
+            <div class="tab-button {% if active_tab == 'history' %}active{% endif %}" title="Click on a search entry in the sidebar to view history">History</div>
         </div>
         
         {% if history_entries %}
@@ -1329,6 +1413,16 @@ if __name__ == '__main__':
                     <button class="button-danger" onclick="clearHistory()">Clear All History</button>
                 </div>
             </div>
+            
+            {% if query and search_time %}
+            <div class="timeline-header">
+                <div>
+                    <p>{{ search_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+                    <p>Current time: <span class="live-ticker">--:--:--</span></p>
+                    <p>Auto-refresh in: <span class="reload-timer">10:00</span></p>
+                </div>
+            </div>
+            {% endif %}
             {% endif %}
             
             {% if error %}
@@ -1341,7 +1435,11 @@ if __name__ == '__main__':
             <div class="timeline-container">
                 <div class="timeline-header">
                     <h2>Results for "{{ query }}"</h2>
-                    <p>{{ search_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+                    <div>
+                        <p>{{ search_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+                        <p>Current time: <span class="live-ticker">--:--:--</span></p>
+                        <p>Auto-refresh in: <span class="reload-timer">10:00</span></p>
+                    </div>
                 </div>
                 
                 {% set ns = namespace(current_day=None, current_day_summary=None) %}
@@ -1438,6 +1536,142 @@ if __name__ == '__main__':
                         window.location.href = '/';
                     }
                 });
+            }
+        }
+
+        let reloadTimer;
+        let currentSeconds = 600; // 10 minutes default
+        let currentQuery = ""; // Store current query for timer management
+        
+        // Initialize functions when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            updateLiveTicker();
+            
+            // Get the current query from the page
+            const queryElements = document.querySelectorAll('h2');
+            for (let element of queryElements) {
+                if (element.textContent.startsWith('Results for "')) {
+                    currentQuery = element.textContent.replace('Results for "', '').replace('"', '');
+                    break;
+                }
+            }
+            
+            // Only start the reload timer if we're on a results or history page with results
+            if (document.querySelector('.timeline-container') || 
+                (document.querySelector('[data-active-tab="history"]') && document.querySelector('.reload-timer'))) {
+                startReloadTimer();
+            }
+        });
+        
+        // Function to update the live ticker
+        function updateLiveTicker() {
+            const tickerElements = document.getElementsByClassName('live-ticker');
+            if (tickerElements.length > 0) {
+                const now = new Date();
+                const timeString = now.toTimeString().split(' ')[0];
+                
+                for (let element of tickerElements) {
+                    element.textContent = timeString;
+                }
+                
+                // Update every second
+                setTimeout(updateLiveTicker, 1000);
+            }
+        }
+        
+        // Function to handle the auto-reload timer
+        function startReloadTimer() {
+            const timerElements = document.getElementsByClassName('reload-timer');
+            if (timerElements.length > 0 && currentQuery) {
+                initializeTimer(currentQuery);
+                reloadTimer = setInterval(() => updateReloadTimer(currentQuery), 1000);
+            }
+        }
+
+        function initializeTimer(query) {
+            if (!query) return;
+            
+            // Use query-specific keys for localStorage
+            const timerStartKey = `timerStart_${query}`;
+            const timerDurationKey = `timerDuration_${query}`;
+            
+            // Check if we have a stored timer for this query
+            const timerStart = localStorage.getItem(timerStartKey);
+            const timerDuration = localStorage.getItem(timerDurationKey);
+            
+            if (timerStart && timerDuration) {
+                const now = new Date().getTime();
+                const startTime = parseInt(timerStart, 10);
+                
+                // Calculate elapsed seconds precisely from the start time
+                const elapsedSeconds = Math.floor((now - startTime) / 1000);
+                
+                // Timer should refresh exactly every 10 minutes (600 seconds)
+                const totalCycles = Math.floor(elapsedSeconds / 600);
+                const nextCycleSeconds = (totalCycles + 1) * 600;
+                
+                // Calculate remaining seconds until next 10-minute mark
+                currentSeconds = nextCycleSeconds - elapsedSeconds;
+                
+                // If the timer is about to expire or has already expired, refresh now
+                if (currentSeconds <= 5) {
+                    clearInterval(reloadTimer);
+                    location.reload();
+                    return;
+                }
+            } else {
+                // First search for this query - start a new 10-minute timer
+                currentSeconds = 600; // 10 minutes
+                localStorage.setItem(timerStartKey, new Date().getTime().toString());
+                localStorage.setItem(timerDurationKey, currentSeconds.toString());
+            }
+            
+            // Update the display immediately
+            updateReloadTimer(query);
+        }
+        
+        function resetTimer(query) {
+            if (!query) return;
+            
+            currentSeconds = 600; // 10 minutes
+            
+            // Use query-specific keys for localStorage
+            const timerStartKey = `timerStart_${query}`;
+            const timerDurationKey = `timerDuration_${query}`;
+            
+            localStorage.setItem(timerStartKey, new Date().getTime().toString());
+            localStorage.setItem(timerDurationKey, currentSeconds.toString());
+        }
+
+        function updateReloadTimer(query) {
+            if (!query) return;
+            
+            // Use query-specific keys for localStorage
+            const timerStartKey = `timerStart_${query}`;
+            const timerDurationKey = `timerDuration_${query}`;
+            
+            // Decrement only if we still have time left
+            if (currentSeconds > 0) {
+                currentSeconds--;
+                // Update stored timer value for this specific query
+                localStorage.setItem(timerDurationKey, currentSeconds.toString());
+            }
+            
+            const minutes = Math.floor(currentSeconds / 60);
+            const seconds = currentSeconds % 60;
+            const timerString = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            
+            const timerElements = document.getElementsByClassName('reload-timer');
+            for (let element of timerElements) {
+                element.textContent = timerString;
+            }
+            
+            if (currentSeconds <= 0) {
+                clearInterval(reloadTimer);
+                // Clear the timer storage before reloading
+                localStorage.removeItem(timerStartKey);
+                localStorage.removeItem(timerDurationKey);
+                location.reload();
             }
         }
     </script>
