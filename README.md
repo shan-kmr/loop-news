@@ -13,6 +13,8 @@ News Timeline is a Flask-based web application that allows you to search for new
 - AI-powered daily summaries using OpenAI GPT-4.1 Nano (with Llama 3.2 as an optional alternative)
 - History tab to view past searches
 - Intelligent caching to reduce API calls and load times
+- Google authentication for personalized user experience
+- Automatic background refresh of outdated search results
 
 ## Installation
 
@@ -21,6 +23,7 @@ News Timeline is a Flask-based web application that allows you to search for new
 - Python 3.7+
 - [Brave News API](https://brave.com/search/api/) key
 - [OpenAI API key](https://platform.openai.com/) (default) or [Hugging Face](https://huggingface.co/) account with access to Llama models (optional)
+- [Google Cloud Console](https://console.cloud.google.com/) project with OAuth credentials (for authentication)
 
 ### Setup
 
@@ -40,8 +43,27 @@ pip install -r requirements.txt
 3. Set up environment variables:
 
 ```bash
+# Required
 export BRAVE_API_KEY="your-brave-api-key"
+
+# For Google authentication
+export GOOGLE_CLIENT_ID="your-google-client-id"
+export GOOGLE_CLIENT_SECRET="your-google-client-secret"
+export GOOGLE_DISCOVERY_URL="https://accounts.google.com/.well-known/openid-configuration"
+
+# For OpenAI summaries (default)
+export OPENAI_API_KEY="your-openai-api-key"
+
+# For Llama model (optional alternative)
+export HF_API_TOKEN="your-huggingface-token"
 ```
+
+4. Configure Google OAuth:
+   - Create a project in the [Google Cloud Console](https://console.cloud.google.com/)
+   - Set up OAuth consent screen
+   - Create OAuth credentials (Web application type)
+   - Add authorized redirect URI: `http://localhost:5000/auth/callback`
+   - Download credentials and set environment variables
 
 ## Usage
 
@@ -114,6 +136,48 @@ MODEL_PROVIDER = "openai"  # Change to "llama" to use Llama model
 
 These summaries appear at the top of each day's section, providing a quick overview.
 
+### User Authentication with Google
+
+The application features Google OAuth integration for user authentication:
+
+1. Users can sign in with their Google account by clicking the "Login with Google" button
+2. Authentication provides:
+   - Personalized experience with user name and profile picture display
+   - User-specific search history that persists across devices
+   - Ability to delete individual search items or clear all history
+
+When signed in:
+- Search history is stored in user-specific files
+- History management options become available
+- Profile information from Google is displayed in the sidebar
+
+### Automatic Background Refresh
+
+The application includes an intelligent background refresh mechanism:
+
+1. **Staleness Detection**:
+   - When viewing search results older than 10 minutes, a refresh is automatically triggered
+   - This occurs both in the main search page and when viewing history items
+
+2. **Adaptive Time Window**:
+   - The system determines an appropriate refresh window based on the original search parameters
+   - Short time periods (past day) are upgraded to "past week" for better coverage
+   - Longer periods (past month, past year) are maintained
+
+3. **Gap Filling**:
+   - If a search is more than a day old, the system intelligently fills in the gap with new articles
+   - Articles from the refresh window are updated with fresh results
+   - Articles older than the refresh window are preserved
+   - Duplicates are eliminated by URL comparison
+
+4. **Seamless Updates**:
+   - Users don't need to manually refresh old searches
+   - The timeline automatically includes the latest articles
+   - The cache is updated with refreshed content
+   - Original timestamps are preserved for articles outside the refresh window
+
+This ensures you always see the most current information without missing developments that occurred between searches.
+
 ### Caching Mechanism
 
 The application uses multi-level caching to improve performance:
@@ -121,7 +185,7 @@ The application uses multi-level caching to improve performance:
 1. **Search Results Caching**:
    - Search results are cached with a key of `{query}_{count}_{freshness}`
    - Default cache validity is 1 hour
-   - Stored in a local JSON file (`search_history.json`)
+   - Stored in a local JSON file (`search_history.json` for anonymous users or user-specific files for logged-in users)
 
 2. **Model Caching**:
    - Llama model files are cached in a local directory (`llama_model_cache`)
@@ -143,14 +207,27 @@ Here's how the application works behind the scenes:
 2. Model initialization starts in a background thread (OpenAI client or Llama model)
 3. If Brave API key is missing, an error is shown
 4. Default query is set to "breaking news"
-5. Search history is loaded from the local JSON file
-6. Templates are rendered with empty results
+5. User authentication status is checked
+6. Search history is loaded from the appropriate file based on login status
+7. Templates are rendered with empty results
+
+### Authentication Flow
+
+1. User clicks "Login with Google"
+2. Browser redirects to Google's OAuth consent screen
+3. User grants permissions
+4. Google redirects back to `/auth/callback` with authorization code
+5. Application exchanges code for access token
+6. User information is retrieved and stored in the session
+7. User is redirected to the main page with personalized experience
 
 ### Search Execution
 
 1. User submits a search form (POST request)
 2. Application checks for cached results with the same parameters
 3. If valid cache exists:
+   - Age of the cached results is checked
+   - If older than 10 minutes, a background refresh is triggered
    - Cached results and summaries are loaded
    - Articles are sorted by age
    - Topic grouping is applied using cached summaries
@@ -160,6 +237,18 @@ Here's how the application works behind the scenes:
    - Topic grouping is applied
    - Summaries are generated for each day using the configured AI model
    - Results and summaries are cached
+
+### Background Refresh Process
+
+1. Age of cached results is checked
+2. If older than 10 minutes:
+   - Appropriate freshness parameter is determined based on original search
+   - New API call is made with adjusted parameters
+   - Results are categorized as "within refresh window" or "beyond refresh window"
+   - Articles beyond the refresh window are preserved
+   - Articles within the window are replaced with fresh content
+   - Duplicates are eliminated by URL comparison
+   - Updated results replace the old cache entry
 
 ### Topic Grouping Process
 
@@ -180,6 +269,7 @@ Here's how the application works behind the scenes:
 2. App lists all past searches in the sidebar
 3. When a history item is selected:
    - Cached search results are retrieved
+   - If results are older than 10 minutes, a background refresh is triggered
    - Articles are sorted and grouped
    - If summaries don't exist in cache, they're generated and saved back
    - Results are displayed with the same UI as search results
@@ -189,8 +279,13 @@ Here's how the application works behind the scenes:
 ```
 news-timeline/
 ├── news_timeline_app.py    # Main application file
+├── brave_news_api.py       # API client for Brave News
+├── auth.py                 # Authentication handling
+├── models.py               # User model and data storage
+├── config.py               # Application configuration
 ├── requirements.txt        # Python dependencies
-├── search_history.json     # Cache file for search results
+├── search_history.json     # Cache file for anonymous users
+├── user_data/              # Directory for user-specific files
 ├── llama_model_cache/      # Directory for cached model files
 └── templates/              # Auto-generated HTML templates
 ```
@@ -200,6 +295,8 @@ news-timeline/
 See `requirements.txt` for the full list of dependencies. Key requirements:
 
 - flask
+- flask-login
+- authlib
 - scikit-learn
 - transformers (for Llama model)
 - torch (for Llama model)

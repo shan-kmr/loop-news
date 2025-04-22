@@ -6,20 +6,26 @@ A Flask-based web app that provides a UI for searching news articles and
 displaying them in a timeline view, sorted by recency.
 """
 
-from flask import Flask, render_template, request, redirect, url_for, jsonify
+from flask import Flask, render_template, request, redirect, url_for, jsonify, session
+from flask_login import LoginManager, login_required, current_user
 import os
 import re
 import json
 import string
 import time
 from collections import defaultdict
-from brave_news_api import BraveNewsAPI
 from datetime import datetime, timedelta
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import threading
 import queue
+
+# Import configuration and models
+from config import *
+from models import User
+from auth import auth_bp, init_oauth
+from brave_news_api import BraveNewsAPI
 
 # Add dependencies for LLM models
 try:
@@ -41,35 +47,36 @@ except ImportError:
     print("pip install openai")
     OPENAI_AVAILABLE = False
 
+# Initialize Flask app
 app = Flask(__name__)
+app.config.from_object('config')
+
+# Register auth blueprint
+app.register_blueprint(auth_bp, url_prefix='/auth')
+
+# Set up Flask-Login
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'auth.login'  # Redirect to login when login_required
+
+# Initialize OAuth
+init_oauth(app)
 
 # Create templates directory if it doesn't exist
 os.makedirs('templates', exist_ok=True)
 
-# Path for search history cache file
-HISTORY_FILE = 'search_history.json'
-
-# Create the Brave News API client - will use environment variable for API key
-brave_api = None
-
-# Define how long (in hours) to consider cached results valid
-CACHE_VALIDITY_HOURS = 1
-
-# Model configuration
-# Set to "llama" or "openai" to choose the AI model provider
-MODEL_PROVIDER = "openai"  # Default to OpenAI
-
 # Llama model configuration
-LLAMA_MODEL_ID = "meta-llama/Llama-3.2-3B-Instruct"
-HF_API_TOKEN = "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"
-# Set a specific cache directory for model storage
 MODEL_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llama_model_cache")
 llama_model = None
 llama_tokenizer = None
 
-# OpenAI configuration
-OPENAI_API_KEY = "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"
-OPENAI_MODEL = "gpt-4.1-nano"
+# Create the Brave News API client
+brave_api = None
+
+@login_manager.user_loader
+def load_user(user_id):
+    """Load user from storage for Flask-Login"""
+    return User.get(user_id)
 
 def init_models():
     """Initialize the models based on provider configuration"""
@@ -223,9 +230,10 @@ def summarize_daily_news_llama(day_articles, query):
 
 # Load search history from JSON file
 def load_search_history():
-    if os.path.exists(HISTORY_FILE):
+    history_file = get_history_file()
+    if os.path.exists(history_file):
         try:
-            with open(HISTORY_FILE, 'r') as f:
+            with open(history_file, 'r') as f:
                 return json.load(f)
         except Exception as e:
             print(f"Error loading history: {e}")
@@ -233,11 +241,125 @@ def load_search_history():
 
 # Save search history to JSON file
 def save_search_history(history):
+    history_file = get_history_file()
     try:
-        with open(HISTORY_FILE, 'w') as f:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(history_file), exist_ok=True)
+        with open(history_file, 'w') as f:
             json.dump(history, f)
     except Exception as e:
         print(f"Error saving history: {e}")
+
+# Get the appropriate history file path based on login status
+def get_history_file():
+    if current_user.is_authenticated:
+        return current_user.get_history_file()
+    else:
+        # Default location for anonymous users
+        return 'search_history.json'
+
+def update_current_day_results(query, count, freshness, old_results):
+    """
+    Refresh all articles from the last search date to the current date,
+    filling in any gap periods in between.
+    
+    Args:
+        query: The search query
+        count: Number of results to fetch
+        freshness: Freshness parameter for the API
+        old_results: Previous search results
+        
+    Returns:
+        Updated results dictionary with refreshed current day articles
+    """
+    global brave_api
+    
+    if brave_api is None:
+        brave_api_key = app.config.get("BRAVE_API_KEY")
+        if not brave_api_key:
+            return old_results
+        brave_api = BraveNewsAPI(api_key=brave_api_key)
+    
+    try:
+        # Always use at least "pw" (past week) to ensure we get a good amount of gap-filling
+        # If the original freshness was longer (pm, py), keep it
+        refresh_freshness = freshness
+        if freshness in ['pd', 'h']:  # If original search was just past day or hours
+            refresh_freshness = 'pw'  # Use past week to fill gaps better
+        
+        # Get fresh results
+        fresh_results = brave_api.search_news(
+            query=query,
+            count=max(count * 2, 50),  # Get more results to ensure gap coverage
+            freshness=refresh_freshness
+        )
+        
+        if not fresh_results or 'results' not in fresh_results or not old_results or 'results' not in old_results:
+            return fresh_results or old_results
+        
+        # Get new and old articles
+        new_articles = fresh_results['results']
+        old_articles = old_results['results']
+        
+        # Find the age of the oldest "recent" article from the original search
+        # We'll keep articles older than this and replace everything newer
+        oldest_recent_age_seconds = float('inf')
+        
+        # Determine what timeframe we're replacing based on the freshness parameter
+        cutoff_seconds = {
+            'pd': 86400,        # 1 day
+            'pw': 604800,       # 1 week
+            'pm': 2592000,      # 1 month 
+            'py': 31536000,     # 1 year
+            'h': 3600           # 1 hour (fallback)
+        }.get(refresh_freshness, 604800)  # Default to 1 week if unknown
+        
+        # Categorize old articles
+        articles_to_keep = []
+        articles_to_replace = []
+        
+        for article in old_articles:
+            age_seconds = extract_age_in_seconds(article)
+            
+            # Keep very old articles (older than our refresh window)
+            if age_seconds > cutoff_seconds:
+                articles_to_keep.append(article)
+            else:
+                articles_to_replace.append(article)
+        
+        # Log what we're doing
+        print(f"Refreshing articles for '{query}' using freshness: {refresh_freshness}")
+        print(f"Keeping {len(articles_to_keep)} older articles beyond the refresh window")
+        print(f"Replacing {len(articles_to_replace)} articles within the refresh window with {len(new_articles)} new articles")
+        
+        # Combine older articles with fresh results
+        # De-duplicate articles by URL to prevent duplicates
+        seen_urls = set()
+        combined_articles = []
+        
+        # First add all the fresh articles (they take priority)
+        for article in new_articles:
+            url = article.get('url', '')
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                combined_articles.append(article)
+        
+        # Then add the older articles we're keeping (if not already present by URL)
+        for article in articles_to_keep:
+            url = article.get('url', '')
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                combined_articles.append(article)
+        
+        # Create updated results
+        updated_results = fresh_results.copy()
+        updated_results['results'] = combined_articles
+        
+        return updated_results
+    
+    except Exception as e:
+        print(f"Error updating results: {str(e)}")
+        return old_results
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -246,10 +368,10 @@ def index():
     
     # Initialize the API client if needed
     if brave_api is None:
-        brave_api_key = os.environ.get("BRAVE_API_KEY")
+        brave_api_key = app.config.get("BRAVE_API_KEY")
         if not brave_api_key:
             return render_template('error.html', 
-                                  error="BRAVE_API_KEY environment variable not set. Please set it and restart the app.")
+                                  error="BRAVE_API_KEY environment variable or config not set. Please set it and restart the app.")
         brave_api = BraveNewsAPI(api_key=brave_api_key)
     
     # Default query and results
@@ -274,6 +396,7 @@ def index():
             cache_key = f"{query}_{count}_{freshness}"
             cached_entry = history.get(cache_key)
             use_cache = False
+            needs_day_refresh = False
             
             if cached_entry and not force_refresh:
                 cached_time = datetime.fromisoformat(cached_entry['timestamp'])
@@ -282,16 +405,36 @@ def index():
                 # Use cache if it's less than CACHE_VALIDITY_HOURS old
                 if time_diff.total_seconds() < CACHE_VALIDITY_HOURS * 3600:
                     use_cache = True
+                    
+                    # Check if we need to refresh the current day's results (older than 10 minutes)
+                    if time_diff.total_seconds() > 600:  # 10 minutes in seconds
+                        needs_day_refresh = True
+                    
                     results = cached_entry['results']
                     search_time = cached_time
                     
                     # Check if we have cached summaries
                     if 'day_summaries' in cached_entry:
-                        print(f"Using cached results and summaries for '{query}' from {cached_time}")
                         day_summaries = cached_entry['day_summaries']
                     else:
-                        print(f"Using cached results for '{query}' from {cached_time}")
                         day_summaries = {}
+                    
+                    # If we need to refresh current day results
+                    if needs_day_refresh:
+                        print(f"Search is {int(time_diff.total_seconds() / 60)} minutes old. Refreshing current day results for '{query}'")
+                        updated_results = update_current_day_results(query, count, freshness, results)
+                        
+                        if updated_results != results:
+                            results = updated_results
+                            search_time = datetime.now()
+                            
+                            # Update the cache with refreshed results
+                            cached_entry['results'] = results
+                            cached_entry['timestamp'] = search_time.isoformat()
+                            history[cache_key] = cached_entry
+                            save_search_history(history)
+                    else:
+                        print(f"Using cached results for '{query}' from {cached_time}")
                     
                     # Extract articles and sort them
                     if results and 'results' in results:
@@ -351,7 +494,8 @@ def index():
                           search_time=search_time,
                           error=error,
                           history_entries=history_entries,
-                          active_tab="search")
+                          active_tab="search",
+                          user=current_user)
 
 @app.route('/history', methods=['GET'])
 def history():
@@ -387,9 +531,31 @@ def history_item(query):
     if query:
         for key, entry in history.items():
             if entry['query'] == query:
-                results = entry['results']
-                search_time = datetime.fromisoformat(entry['timestamp'])
+                cached_time = datetime.fromisoformat(entry['timestamp'])
+                time_diff = datetime.now() - cached_time
                 current_query = query
+                
+                # Check if we need to refresh the current day's results (older than 10 minutes)
+                needs_day_refresh = time_diff.total_seconds() > 600  # 10 minutes in seconds
+                
+                results = entry['results']
+                search_time = cached_time
+                count = entry.get('count', 10)
+                freshness = entry.get('freshness', 'pw')
+                
+                # If results are older than 10 minutes, refresh the current day's data
+                if needs_day_refresh:
+                    print(f"History item is {int(time_diff.total_seconds() / 60)} minutes old. Refreshing current day results for '{query}'")
+                    updated_results = update_current_day_results(query, count, freshness, results)
+                    
+                    if updated_results != results:
+                        results = updated_results
+                        search_time = datetime.now()
+                        
+                        # Update the cache with refreshed results
+                        entry['results'] = results
+                        entry['timestamp'] = search_time.isoformat()
+                        save_search_history(history)
                 
                 # Check if we have cached summaries
                 day_summaries = entry.get('day_summaries', {})
@@ -428,9 +594,11 @@ def history_item(query):
                           search_time=search_time,
                           error=None,
                           history_entries=history_entries,
-                          active_tab="history")
+                          active_tab="history",
+                          user=current_user)
 
 @app.route('/api/delete_history/<path:query>', methods=['POST'])
+@login_required
 def delete_history_item(query):
     """API endpoint to delete a history item."""
     history = load_search_history()
@@ -449,11 +617,11 @@ def delete_history_item(query):
     return jsonify({'success': True})
 
 @app.route('/api/clear_history', methods=['POST'])
+@login_required
 def clear_history():
     """API endpoint to clear all history."""
     save_search_history({})
     return jsonify({'success': True})
-
 
 def clean_text(text):
     """Clean and preprocess text for similarity comparison."""
@@ -465,7 +633,6 @@ def clean_text(text):
     # Remove extra whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text
-
 
 def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_summaries=None):
     """
@@ -592,7 +759,6 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
                  'newest_age': a.get('age', 'Unknown'), 'day_group': day_group_filter(a)} 
                 for a in articles]
 
-
 # Function to extract age in seconds for sorting
 def extract_age_in_seconds(article):
     """Convert age strings to seconds for sorting"""
@@ -619,7 +785,6 @@ def extract_age_in_seconds(article):
     
     # Default to a large number for unknown ages to place them at the end
     return float('inf')
-
 
 # Template filter to get the day group for an article
 @app.template_filter('day_group')
@@ -666,6 +831,7 @@ if __name__ == '__main__':
     <title>News Timeline</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -693,6 +859,44 @@ if __name__ == '__main__':
         .sidebar-title {
             margin: 0;
             font-size: 22px;
+        }
+        .sidebar-user {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            font-size: 14px;
+        }
+        .user-avatar {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            margin-right: 10px;
+            background-color: #3498db;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .user-avatar img {
+            width: 100%;
+            height: auto;
+        }
+        .login-button, .logout-button {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 4px;
+            text-decoration: none;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+        .login-button {
+            background-color: #3498db;
+            color: white;
+        }
+        .logout-button {
+            background-color: #7f8c8d;
+            color: white;
+            margin-left: 10px;
         }
         .tab-nav {
             display: flex;
@@ -943,6 +1147,13 @@ if __name__ == '__main__':
             display: flex;
             gap: 10px;
         }
+        .login-notice {
+            background-color: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 10px 15px;
+            margin-bottom: 20px;
+            color: #2c3e50;
+        }
         @media (max-width: 768px) {
             .sidebar {
                 width: 100%;
@@ -968,6 +1179,29 @@ if __name__ == '__main__':
     <div class="sidebar">
         <div class="sidebar-header">
             <h1 class="sidebar-title">News Timeline</h1>
+            <div class="sidebar-user">
+                {% if user.is_authenticated %}
+                <div class="user-avatar">
+                    {% if user.profile_pic %}
+                    <img src="{{ user.profile_pic }}" alt="{{ user.name }}">
+                    {% else %}
+                    <i class="fas fa-user"></i>
+                    {% endif %}
+                </div>
+                <div>
+                    <div>{{ user.name }}</div>
+                    <a href="{{ url_for('auth.logout') }}" class="logout-button">Logout</a>
+                </div>
+                {% else %}
+                <div class="user-avatar">
+                    <i class="fas fa-user"></i>
+                </div>
+                <div>
+                    <div>Guest</div>
+                    <a href="{{ url_for('auth.login') }}" class="login-button">Login with Google</a>
+                </div>
+                {% endif %}
+            </div>
         </div>
         <div class="tab-nav">
             <div class="tab-button {% if active_tab == 'search' %}active{% endif %}" onclick="window.location.href='/'">Search</div>
@@ -992,6 +1226,12 @@ if __name__ == '__main__':
     
     <div class="content">
         <div class="content-inner">
+            {% if not user.is_authenticated %}
+            <div class="login-notice">
+                <p><i class="fas fa-info-circle"></i> Sign in with Google to save your search history across devices.</p>
+            </div>
+            {% endif %}
+            
             {% if active_tab == 'search' %}
             <h1>Search News</h1>
             
@@ -1232,10 +1472,18 @@ if __name__ == '__main__':
 </body>
 </html>''')
     
+    # Create user_data directory for user files
+    os.makedirs('user_data', exist_ok=True)
+    
     # Run the Flask app
     print("Starting Flask application on http://localhost:5000")
     print("NOTE: You need to install scikit-learn for the topic grouping to work:")
     print("pip install scikit-learn")
     print("NOTE: To enable Llama summaries, install:")
     print("pip install transformers torch huggingface_hub")
+    print("NOTE: To enable OpenAI summaries, install:")
+    print("pip install openai")
+    print("NOTE: Set the following environment variables for Google authentication:")
+    print("export GOOGLE_CLIENT_ID=your_google_client_id")
+    print("export GOOGLE_CLIENT_SECRET=your_google_client_secret")
     app.run(debug=True) 
