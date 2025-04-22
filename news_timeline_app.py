@@ -276,14 +276,14 @@ def update_current_day_results(query, count, freshness, old_results):
         old_results: Previous search results
         
     Returns:
-        Updated results dictionary with refreshed current day articles
+        Updated results dictionary with refreshed current day articles and a list of days with new content
     """
     global brave_api
     
     if brave_api is None:
         brave_api_key = app.config.get("BRAVE_API_KEY")
         if not brave_api_key:
-            return old_results
+            return old_results, []
         brave_api = BraveNewsAPI(api_key=brave_api_key)
     
     try:
@@ -305,7 +305,7 @@ def update_current_day_results(query, count, freshness, old_results):
         )
         
         if not fresh_results or 'results' not in fresh_results or not old_results or 'results' not in old_results:
-            return fresh_results or old_results
+            return fresh_results or old_results, []
         
         # Get new and old articles
         new_articles = fresh_results['results']
@@ -326,7 +326,7 @@ def update_current_day_results(query, count, freshness, old_results):
         
         # Categorize old articles
         articles_to_keep = []
-        articles_to_replace = []
+        existing_articles_in_window = []
         
         for article in old_articles:
             age_seconds = extract_age_in_seconds(article)
@@ -335,41 +335,85 @@ def update_current_day_results(query, count, freshness, old_results):
             if age_seconds > cutoff_seconds:
                 articles_to_keep.append(article)
             else:
-                articles_to_replace.append(article)
+                # Keep track of articles within the refresh window (we'll keep these too)
+                existing_articles_in_window.append(article)
         
         # Log what we're doing
         print(f"Refreshing articles for '{query}' using freshness: {refresh_freshness}")
         print(f"Keeping {len(articles_to_keep)} older articles beyond the refresh window")
-        print(f"Replacing {len(articles_to_replace)} articles within the refresh window with {len(new_articles)} new articles")
+        print(f"Looking for new articles to add to {len(existing_articles_in_window)} existing articles within the window")
         
         # Combine older articles with fresh results
         # De-duplicate articles by URL to prevent duplicates
         seen_urls = set()
         combined_articles = []
         
-        # First add all the fresh articles (they take priority)
+        # Track which days have new articles added (for summary regeneration)
+        days_with_new_articles = set()
+        
+        # First add all existing articles in window (preserve what we've already shown)
+        for article in existing_articles_in_window:
+            url = article.get('url', '')
+            if url:
+                seen_urls.add(url)
+                combined_articles.append(article)
+        
+        # Then add new articles that aren't already present
+        new_articles_added = 0
         for article in new_articles:
             url = article.get('url', '')
             if url and url not in seen_urls:
                 seen_urls.add(url)
                 combined_articles.append(article)
+                new_articles_added += 1
+                
+                # Track which day this article belongs to for summary regeneration
+                day_group = day_group_filter(article)
+                days_with_new_articles.add(day_group)
         
-        # Then add the older articles we're keeping (if not already present by URL)
+        # Finally add the older articles
         for article in articles_to_keep:
             url = article.get('url', '')
             if url and url not in seen_urls:
                 seen_urls.add(url)
                 combined_articles.append(article)
         
+        print(f"Added {new_articles_added} new unique articles to the results")
+        if days_with_new_articles:
+            print(f"Days with new content (will regenerate summaries): {', '.join(days_with_new_articles)}")
+        
         # Create updated results
         updated_results = fresh_results.copy()
         updated_results['results'] = combined_articles
         
-        return updated_results
+        return updated_results, list(days_with_new_articles)
     
     except Exception as e:
         print(f"Error updating results: {str(e)}")
-        return old_results
+        return old_results, []
+
+def collect_day_summaries(history):
+    """Collect all day summaries from history entries for display on the home page."""
+    all_summaries = {}
+    
+    for key, entry in history.items():
+        query = entry.get('query', '')
+        if not query:
+            continue
+            
+        if 'day_summaries' in entry and entry['day_summaries']:
+            # Find the most recent day with a summary
+            for day, summary in entry['day_summaries'].items():
+                if summary:  # Only if summary exists
+                    # Store as key: day_query
+                    summary_key = f"{day}_{query}"
+                    all_summaries[summary_key] = {
+                        'query': query,
+                        'day': day,
+                        'summary': summary
+                    }
+    
+    return all_summaries
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -381,7 +425,8 @@ def index():
         brave_api_key = app.config.get("BRAVE_API_KEY")
         if not brave_api_key:
             return render_template('error.html', 
-                                  error="BRAVE_API_KEY environment variable or config not set. Please set it and restart the app.")
+                                  error="BRAVE_API_KEY environment variable or config not set. Please set it and restart the app.",
+                                  user=current_user)
         brave_api = BraveNewsAPI(api_key=brave_api_key)
     
     # Default query and results
@@ -392,6 +437,17 @@ def index():
     sorted_articles = []
     topic_groups = []
     history = load_search_history()
+    
+    # History and timing handling
+    sorted_history = sorted(history.values(), key=lambda entry: entry.get('search_time', 0), reverse=True)
+    
+    # Format history timestamps for display
+    for entry in sorted_history:
+        if 'search_time' in entry:
+            entry['formatted_time'] = datetime.fromtimestamp(entry['search_time']).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Collect day summaries regardless of request method
+    day_summaries = collect_day_summaries(history)
     
     # Process form submission
     if request.method == 'POST':
@@ -443,11 +499,18 @@ def index():
                         # If we need to refresh current day results
                         if needs_day_refresh:
                             print(f"Search is {int(time_diff.total_seconds() / 60)} minutes old. Refreshing current day results for '{query}'")
-                            updated_results = update_current_day_results(query, count, freshness, results)
+                            updated_results, days_with_new_articles = update_current_day_results(query, count, freshness, results)
                             
                             if updated_results != results:
                                 results = updated_results
                                 search_time = datetime.now()
+                                
+                                # If we have days with new articles, clear their summaries to force regeneration
+                                if days_with_new_articles and 'day_summaries' in cached_entry:
+                                    print(f"Clearing summaries for days with new content: {', '.join(days_with_new_articles)}")
+                                    for day in days_with_new_articles:
+                                        if day in cached_entry['day_summaries']:
+                                            cached_entry['day_summaries'][day] = None
                                 
                                 # Update the cache with refreshed results
                                 cached_entry['results'] = results
@@ -511,13 +574,13 @@ def index():
     history_entries.sort(key=lambda x: x['timestamp'], reverse=True)
     
     return render_template('index.html', 
-                          query=query, 
+                          query=query,
                           results=results, 
-                          sorted_articles=sorted_articles,
-                          topic_groups=topic_groups,
                           search_time=search_time,
-                          error=error,
                           history_entries=history_entries,
+                          error=error,
+                          topic_groups=topic_groups,
+                          day_summaries=day_summaries,
                           active_tab="search",
                           user=current_user)
 
@@ -547,11 +610,11 @@ def history():
         return render_template('index.html',
                               query='',
                               results=None,
-                              sorted_articles=[],
-                              topic_groups=[],
                               search_time=None,
                               error=None,
-                              history_entries=[],
+                              history_entries=history_entries,
+                              topic_groups=[],
+                              day_summaries={},
                               active_tab="history",
                               user=current_user)
 
@@ -573,7 +636,6 @@ def history_item(query):
             'timestamp': entry['timestamp'],
             'key': key
         })
-        print(f"History entry: '{stored_query}' with key: {key}")
     
     # Sort history by most recent first
     history_entries.sort(key=lambda x: x['timestamp'], reverse=True)
@@ -582,9 +644,9 @@ def history_item(query):
     results = None
     search_time = None
     topic_groups = []
-    sorted_articles = []
     current_query = ''
     similarity_threshold = float(request.args.get('similarity_threshold', 0.3))
+    force_refresh = request.args.get('force_refresh') == 'true'
     
     # Try to find an exact match first
     found = False
@@ -605,42 +667,63 @@ def history_item(query):
                 count = entry.get('count', 10)
                 freshness = entry.get('freshness', 'pw')
                 
-                # Check if we need to refresh
-                needs_day_refresh = time_diff.total_seconds() > 600  # 10 minutes in seconds
+                # Check if we need to refresh - only if forced or if it's very old (> 1 hour)
+                needs_day_refresh = force_refresh or time_diff.total_seconds() > 3600  # 1 hour in seconds
                 
                 # Handle refreshing and processing
                 if needs_day_refresh:
                     print(f"History item is {int(time_diff.total_seconds() / 60)} minutes old. Refreshing current day results for '{query}'")
-                    updated_results = update_current_day_results(query, count, freshness, results)
+                    updated_results, days_with_new_articles = update_current_day_results(query, count, freshness, results)
                     
                     if updated_results != results:
                         results = updated_results
                         search_time = datetime.now()
                         
+                        # If we have days with new articles, clear their summaries to force regeneration
+                        if days_with_new_articles and 'day_summaries' in entry:
+                            print(f"Clearing summaries for days with new content: {', '.join(days_with_new_articles)}")
+                            for day in days_with_new_articles:
+                                if day in entry['day_summaries']:
+                                    entry['day_summaries'][day] = None
+                        
                         # Update the cache with refreshed results
                         entry['results'] = results
                         entry['timestamp'] = search_time.isoformat()
                         save_search_history(history)
+                else:
+                    print(f"Using cached results for '{query}' from {cached_time}, {int(time_diff.total_seconds() / 60)} minutes old")
                 
                 # Process day summaries
                 day_summaries = entry.get('day_summaries', {})
                 if day_summaries is None:
                     day_summaries = {}
                 
+                # Validate each summary to ensure we don't have invalid entries
+                valid_summaries = 0
+                for day, summary in list(day_summaries.items()):
+                    if is_valid_summary(summary):
+                        valid_summaries += 1
+                    else:
+                        # Clear invalid summaries so they'll be regenerated
+                        day_summaries[day] = None
+                
+                print(f"Found {valid_summaries} valid day summaries out of {len(day_summaries)} total in cache")
+                
                 # Process articles
                 if results and 'results' in results:
                     sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
+                    # Pass existing day summaries to avoid regenerating summaries
                     topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, current_query, day_summaries)
                     
-                    # Update summaries if needed
-                    new_summaries_generated = False
+                    # Check if we need to update summaries in history
+                    summary_changed = False
                     for topic in topic_groups:
                         day = topic['day_group']
-                        if day in day_summaries and day_summaries[day] is not None:
-                            new_summaries_generated = True
-                            break
+                        if day in day_summaries and day_summaries[day] != topic.get('day_summary'):
+                            summary_changed = True
+                            day_summaries[day] = topic.get('day_summary')
                     
-                    if new_summaries_generated and 'day_summaries' not in entry:
+                    if summary_changed:
                         entry['day_summaries'] = day_summaries
                         save_search_history(history)
                         print(f"Updated cache with new summaries for query: '{query}'")
@@ -658,7 +741,7 @@ def history_item(query):
                 if brave_api_key:
                     brave_api = BraveNewsAPI(api_key=brave_api_key)
                 else:
-                    return render_template('error.html', error="BRAVE_API_KEY not set")
+                    return render_template('error.html', error="BRAVE_API_KEY not set", user=current_user)
             
             # Default values
             count = 10
@@ -702,11 +785,11 @@ def history_item(query):
     return render_template('index.html', 
                           query=current_query, 
                           results=results, 
-                          sorted_articles=sorted_articles,
-                          topic_groups=topic_groups,
                           search_time=search_time,
                           error=None,
                           history_entries=history_entries,
+                          topic_groups=topic_groups,
+                          day_summaries=day_summaries,
                           active_tab="history",
                           user=current_user)
 
@@ -746,6 +829,16 @@ def clean_text(text):
     # Remove extra whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
+def is_valid_summary(summary):
+    """Check if a summary exists and is valid."""
+    if summary is None:
+        return False
+    if not isinstance(summary, str):
+        return False
+    if len(summary.strip()) == 0:
+        return False
+    return True
 
 def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_summaries=None):
     """
@@ -832,13 +925,18 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
         # Track days that need summaries
         days_needing_summaries = set()
         
-        # Add existing summaries to topic groups first
+        # Add existing summaries to topic groups first 
         for topic in topic_groups:
             day = topic['day_group']
-            topic['day_summary'] = day_summaries.get(day)
-            # If this day doesn't have a summary yet, add it to our list to process
-            if topic['day_summary'] is None and day not in days_needing_summaries:
-                days_needing_summaries.add(day)
+            # Check if we already have a valid summary for this day
+            existing_summary = day_summaries.get(day)
+            topic['day_summary'] = existing_summary
+            
+            if not is_valid_summary(existing_summary):
+                if day not in days_needing_summaries:
+                    days_needing_summaries.add(day)
+            else:
+                print(f"Using existing summary for day: {day}")
         
         # Only generate new summaries if needed and if models are available
         if days_needing_summaries and ((MODEL_PROVIDER == "llama" and LLAMA_AVAILABLE and llama_model is not None) or 
@@ -854,14 +952,24 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
             
             # Generate summaries only for days that need them
             for day, day_art in day_articles.items():
+                # Skip days that have valid summaries (this is an additional safeguard)
+                if day in day_summaries and is_valid_summary(day_summaries[day]):
+                    print(f"Skipping summary generation for day: {day} (already valid)")
+                    continue
+                    
                 print(f"Generating new summary for day: {day} using {MODEL_PROVIDER}")
                 summary = summarize_daily_news(day_art, query)
-                day_summaries[day] = summary
                 
-                # Update topic groups with new summaries
-                for topic in topic_groups:
-                    if topic['day_group'] == day:
-                        topic['day_summary'] = summary
+                # Only update if we got a valid summary
+                if is_valid_summary(summary):
+                    day_summaries[day] = summary
+                    
+                    # Update topic groups with new summaries
+                    for topic in topic_groups:
+                        if topic['day_group'] == day:
+                            topic['day_summary'] = summary
+                else:
+                    print(f"Failed to generate valid summary for day: {day}")
         
         return topic_groups
     
@@ -941,558 +1049,646 @@ if __name__ == '__main__':
         f.write('''<!DOCTYPE html>
 <html>
 <head>
-    <title>News Timeline</title>
+    <title>news timeline</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            line-height: 1.6;
-            color: #333;
+        :root {
+            --bg-color: #f8f8f8;
+            --text-color: #333;
+            --accent-color: #6d28d9;
+            --secondary-color: #a78bfa;
+            --border-color: #e5e7eb;
+            --card-bg: #ffffff;
+        }
+        
+        * {
+            box-sizing: border-box;
             margin: 0;
             padding: 0;
-            background-color: #f9f9f9;
+        }
+        
+        body {
+            font-family: "Proxima Nova", Tahoma, -apple-system, BlinkMacSystemFont, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        h1, h2, h3, h4, h5, h6, p, a, span, div, button {
+            text-transform: lowercase;
+        }
+        
+        a {
+            color: var(--accent-color);
+            text-decoration: none;
+        }
+        
+        a:hover {
+            text-decoration: underline;
+        }
+        
+        header {
             display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 30px;
         }
-        .sidebar {
-            width: 280px;
-            background-color: #2c3e50;
+        
+        .logo {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--accent-color);
+        }
+        
+        nav {
+            display: flex;
+            gap: 20px;
+        }
+        
+        nav a {
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+        
+        nav a.active {
+            background-color: var(--secondary-color);
             color: white;
-            height: 100vh;
-            overflow-y: auto;
-            position: fixed;
-            left: 0;
-            top: 0;
         }
-        .sidebar-header {
-            padding: 20px;
-            border-bottom: 1px solid #395069;
-        }
-        .sidebar-title {
-            margin: 0;
-            font-size: 22px;
-        }
-        .sidebar-user {
-            margin-top: 10px;
+        
+        .user-info {
             display: flex;
             align-items: center;
+            gap: 10px;
             font-size: 14px;
         }
+        
         .user-avatar {
             width: 30px;
             height: 30px;
             border-radius: 50%;
-            margin-right: 10px;
-            background-color: #3498db;
+            background-color: var(--secondary-color);
             display: flex;
             align-items: center;
             justify-content: center;
-            overflow: hidden;
-        }
-        .user-avatar img {
-            width: 100%;
-            height: auto;
-        }
-        .login-button, .logout-button {
-            display: inline-block;
-            padding: 5px 10px;
-            border-radius: 4px;
-            text-decoration: none;
-            font-size: 12px;
-            margin-top: 5px;
-        }
-        .login-button {
-            background-color: #3498db;
             color: white;
         }
-        .logout-button {
-            background-color: #7f8c8d;
-            color: white;
-            margin-left: 10px;
-        }
-        .tab-nav {
+        
+        .main-container {
             display: flex;
-            padding: 0 20px;
-            border-bottom: 1px solid #395069;
+            gap: 30px;
         }
-        .tab-button {
-            padding: 15px 0;
+        
+        .brief-list {
             flex: 1;
-            text-align: center;
-            cursor: pointer;
-            color: #ccc;
-            font-weight: bold;
-            border-bottom: 3px solid transparent;
-        }
-        .tab-button.active {
-            color: white;
-            border-bottom-color: #3498db;
-        }
-        .history-list {
-            padding: 0;
-            margin: 0;
-            list-style: none;
-        }
-        .history-item {
-            padding: 12px 20px;
-            border-bottom: 1px solid #34495e;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-        .history-item:hover {
-            background-color: #34495e;
-        }
-        .history-query {
-            font-weight: bold;
-            margin-bottom: 4px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .history-date {
-            font-size: 12px;
-            color: #bdc3c7;
-        }
-        .content {
-            flex: 1;
-            margin-left: 280px;
-            padding: 20px;
-            max-width: 1000px;
-        }
-        .content-inner {
             max-width: 800px;
-            margin: 0 auto;
         }
-        h1 {
-            color: #2c3e50;
-            border-bottom: 2px solid #3498db;
-            padding-bottom: 10px;
+        
+        .brief-card {
+            background-color: var(--card-bg);
+            padding: 24px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 1px solid var(--border-color);
         }
-        .search-container {
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 5px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        
+        .brief-card:hover {
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            transform: translateY(-2px);
+        }
+        
+        .brief-title {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: var(--accent-color);
+        }
+        
+        .brief-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 16px;
+        }
+        
+        .brief-summary {
+            line-height: 1.7;
+            margin-bottom: 16px;
+            font-weight: 300;
+        }
+        
+        .refresh-info {
+            display: flex;
+            align-items: center;
+            background-color: #f0f0f0;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            color: #555;
+            align-self: flex-start;
+        }
+        
+        .reload-timer {
+            font-weight: bold;
+            color: var(--accent-color);
+            margin-left: 4px;
+        }
+        
+        .cta-button {
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 20px;
+        }
+        
+        .cta-button:hover {
+            background-color: #5b21b6;
+        }
+        
+        .search-box {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 16px;
             margin-bottom: 20px;
         }
-        .search-form {
+        
+        .search-options {
             display: flex;
             flex-wrap: wrap;
             gap: 10px;
-            align-items: flex-end;
+            margin-bottom: 20px;
         }
-        .form-group {
-            flex: 1;
-            min-width: 200px;
+        
+        .option-select {
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background-color: white;
+            font-size: 14px;
         }
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-            color: #2c3e50;
-        }
-        input, select {
-            width: 100%;
-            padding: 8px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 16px;
-        }
-        button {
-            background-color: #3498db;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            font-size: 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            transition: background-color 0.3s;
-        }
-        button:hover {
-            background-color: #2980b9;
-        }
-        .button-secondary {
-            background-color: #7f8c8d;
-        }
-        .button-secondary:hover {
-            background-color: #6c7a7b;
-        }
-        .button-danger {
-            background-color: #e74c3c;
-        }
-        .button-danger:hover {
-            background-color: #c0392b;
-        }
+        
         .timeline-container {
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 5px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            background-color: var(--card-bg);
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            margin-top: 20px;
+            border: 1px solid var(--border-color);
         }
+        
         .timeline-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
+            margin-bottom: 30px;
         }
+        
         .timeline-day {
+            font-size: 18px;
+            font-weight: 600;
             margin-top: 30px;
-            margin-bottom: 10px;
-            font-weight: bold;
-            color: #2c3e50;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
             border-bottom: 1px solid #eee;
-            padding-bottom: 5px;
         }
+        
         .day-summary {
-            background-color: #f0f7fb;
-            padding: 15px;
-            border-left: 4px solid #3498db;
+            background-color: #f5f3ff;
+            padding: 15px 20px;
+            border-radius: 6px;
             margin-bottom: 20px;
-            border-radius: 0 5px 5px 0;
+            line-height: 1.7;
             font-style: italic;
-            color: #2c3e50;
+            color: #4a5568;
         }
+        
         .timeline-item {
-            border-left: 3px solid #3498db;
-            padding-left: 15px;
+            border-left: 3px solid var(--accent-color);
+            padding-left: 20px;
             margin-bottom: 25px;
-            position: relative;
+            padding-bottom: 15px;
         }
-        .timeline-item:before {
-            content: '';
-            position: absolute;
-            width: 12px;
-            height: 12px;
-            background-color: #3498db;
-            border-radius: 50%;
-            left: -7.5px;
-            top: 0;
-        }
+        
         .topic-header {
             cursor: pointer;
             display: flex;
             align-items: center;
-            margin-bottom: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
         }
+        
         .topic-title {
             font-size: 18px;
-            font-weight: bold;
+            font-weight: 600;
             margin-right: 10px;
+            color: var(--accent-color);
         }
+        
         .topic-count {
-            background-color: #3498db;
+            background-color: var(--secondary-color);
             color: white;
             border-radius: 12px;
-            padding: 2px 8px;
-            font-size: 12px;
-            margin-left: 8px;
+            padding: 2px 10px;
+            font-size: 13px;
+            font-weight: 500;
         }
+        
         .topic-time {
-            color: #7f8c8d;
+            color: #666;
             font-size: 14px;
             margin-left: auto;
         }
+        
         .topic-content {
             display: none;
             margin-left: 20px;
-            margin-bottom: 15px;
         }
-        .timeline-time {
-            color: #3498db;
-            font-weight: bold;
-            margin-bottom: 5px;
+        
+        .article-item {
+            border-left: 2px solid #e2e8f0;
+            padding: 15px;
+            margin-bottom: 20px;
+            background-color: #fafafa;
+            border-radius: 4px;
         }
+        
         .timeline-source {
-            color: #7f8c8d;
+            color: #4a5568;
             font-size: 14px;
             margin-bottom: 10px;
         }
+        
         .timeline-title {
-            font-size: 18px;
-            font-weight: bold;
+            font-size: 17px;
+            font-weight: 600;
             margin-bottom: 10px;
         }
+        
         .timeline-desc {
-            margin-bottom: 10px;
-            color: #555;
+            margin-bottom: 15px;
+            color: #4a5568;
+            line-height: 1.6;
         }
+        
         .timeline-link {
-            display: inline-block;
             font-size: 14px;
-            color: #3498db;
-            text-decoration: none;
+            color: var(--accent-color);
             word-break: break-all;
         }
-        .timeline-link:hover {
-            text-decoration: underline;
-        }
-        .article-item {
-            border-left: 2px solid #bdc3c7;
-            padding-left: 15px;
-            margin-bottom: 15px;
-        }
+        
         .expand-icon {
-            margin-right: 8px;
+            margin-right: 10px;
             transition: transform 0.3s;
         }
+        
         .expanded .expand-icon {
             transform: rotate(90deg);
         }
+        
         .error {
-            background-color: #f8d7da;
-            color: #721c24;
-            padding: 10px;
-            border-radius: 5px;
+            background-color: #fee2e2;
+            color: #b91c1c;
+            padding: 15px;
+            border-radius: 6px;
             margin-bottom: 20px;
         }
-        .no-results {
-            text-align: center;
-            padding: 50px;
-            color: #7f8c8d;
-        }
-        .controls {
+        
+        .fab-button {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background-color: var(--accent-color);
+            color: white;
             display: flex;
-            justify-content: space-between;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            cursor: pointer;
+            z-index: 100;
+            transition: all 0.3s ease;
+        }
+        
+        .fab-button:hover {
+            background-color: #5b21b6;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 15px rgba(0,0,0,0.25);
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0,0,0,0.5);
+            z-index: 200;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-content {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 500px;
+        }
+        
+        .modal-title {
+            font-size: 22px;
+            font-weight: 600;
             margin-bottom: 20px;
         }
-        .controls-right {
+        
+        .modal-buttons {
             display: flex;
+            justify-content: flex-end;
             gap: 10px;
+            margin-top: 20px;
         }
-        .login-notice {
-            background-color: #f8f9fa;
-            border-left: 4px solid #3498db;
-            padding: 10px 15px;
-            margin-bottom: 20px;
-            color: #2c3e50;
+        
+        .modal-button {
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            border: none;
+            font-size: 16px;
         }
+        
+        .cancel-button {
+            background-color: #e5e7eb;
+            color: #4b5563;
+        }
+        
+        .submit-button {
+            background-color: var(--accent-color);
+            color: white;
+        }
+        
         @media (max-width: 768px) {
-            .sidebar {
-                width: 100%;
-                height: auto;
-                position: relative;
-            }
-            .content {
-                margin-left: 0;
-            }
-            body {
+            .main-container {
                 flex-direction: column;
             }
-            .search-form {
+            
+            header {
                 flex-direction: column;
+                gap: 15px;
+                align-items: flex-start;
             }
-            .form-group {
-                width: 100%;
+            
+            .brief-card {
+                padding: 20px;
             }
         }
     </style>
 </head>
 <body>
-    <div class="sidebar">
-        <div class="sidebar-header">
-            <h1 class="sidebar-title">News Timeline</h1>
-            <div class="sidebar-user">
-                {% if user.is_authenticated %}
+    <header>
+        <div class="logo">news timeline</div>
+        <nav>
+            <a href="/" class="{% if active_tab == 'search' %}active{% endif %}">home</a>
+            <a href="/history" class="{% if active_tab == 'history' %}active{% endif %}">briefs</a>
+        </nav>
+        <div class="user-info">
+            {% if user.is_authenticated %}
                 <div class="user-avatar">
                     {% if user.profile_pic %}
-                    <img src="{{ user.profile_pic }}" alt="{{ user.name }}">
+                        <img src="{{ user.profile_pic }}" alt="{{ user.name }}" width="30" height="30">
                     {% else %}
-                    <i class="fas fa-user"></i>
+                        <i class="fas fa-user"></i>
                     {% endif %}
                 </div>
-                <div>
-                    <div>{{ user.name }}</div>
-                    <a href="{{ url_for('auth.logout') }}" class="logout-button">Logout</a>
-                </div>
-                {% else %}
+                <span>{{ user.name }}</span>
+                <a href="{{ url_for('auth.logout') }}">logout</a>
+            {% else %}
                 <div class="user-avatar">
                     <i class="fas fa-user"></i>
                 </div>
-                <div>
-                    <div>Guest</div>
-                    <a href="{{ url_for('auth.login') }}" class="login-button">Login with Google</a>
+                <span>guest</span>
+                <a href="{{ url_for('auth.login') }}">login</a>
+            {% endif %}
+        </div>
+    </header>
+
+    <div class="main-container">
+        <main class="brief-list">
+            {% if error %}
+                <div class="error">
+                    {{ error }}
                 </div>
-                {% endif %}
-            </div>
-        </div>
-        <div class="tab-nav">
-            <div class="tab-button {% if active_tab == 'search' %}active{% endif %}" onclick="window.location.href='/'">Search</div>
-            <div class="tab-button {% if active_tab == 'history' %}active{% endif %}" title="Click on a search entry in the sidebar to view history">History</div>
-        </div>
-        
-        {% if history_entries %}
-        <ul class="history-list">
-            {% for entry in history_entries %}
-            <li class="history-item" onclick="window.location.href='/history/{{ entry.query }}'">
-                <div class="history-query">{{ entry.query }}</div>
-                <div class="history-date">{{ entry.timestamp|format_datetime }}</div>
-            </li>
-            {% endfor %}
-        </ul>
-        {% else %}
-        <div style="padding: 20px; text-align: center; color: #bdc3c7;">
-            <p>No search history yet.</p>
-        </div>
-        {% endif %}
-    </div>
-    
-    <div class="content">
-        <div class="content-inner">
-            {% if not user.is_authenticated %}
-            <div class="login-notice">
-                <p><i class="fas fa-info-circle"></i> Sign in with Google to save your search history across devices.</p>
-            </div>
             {% endif %}
             
             {% if active_tab == 'search' %}
-            <h1>Search News</h1>
-            
-            <div class="search-container">
-                <form class="search-form" method="post" action="/">
-                    <div class="form-group">
-                        <label for="query">Search Query</label>
-                        <input type="text" id="query" name="query" value="{{ query }}" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="count">Number of Results</label>
-                        <select id="count" name="count">
-                            <option value="10">10</option>
-                            <option value="20">20</option>
-                            <option value="30">30</option>
-                            <option value="50">50</option>
+                <form method="post" action="/" id="searchForm">
+                    <input type="text" id="query" name="query" value="{{ query }}" placeholder="search for a topic..." class="search-box" required>
+                    <div class="search-options">
+                        <select id="count" name="count" class="option-select">
+                            <option value="10">10 results</option>
+                            <option value="20">20 results</option>
+                            <option value="30">30 results</option>
+                            <option value="50" selected>50 results</option>
                         </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="freshness">Time Period</label>
-                        <select id="freshness" name="freshness">
-                            <option value="pd">Past Day</option>
-                            <option value="pw" selected>Past Week</option>
-                            <option value="pm">Past Month</option>
-                            <option value="py">Past Year</option>
+                        <select id="freshness" name="freshness" class="option-select">
+                            <option value="pd">past day</option>
+                            <option value="pw">past week</option>
+                            <option value="pm">past month</option>
+                            <option value="py" selected>past year</option>
                         </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="similarity_threshold">Topic Similarity</label>
-                        <select id="similarity_threshold" name="similarity_threshold">
-                            <option value="0.2">Low - More Topics</option>
-                            <option value="0.3" selected>Medium</option>
-                            <option value="0.4">High - Fewer Topics</option>
+                        <select id="similarity_threshold" name="similarity_threshold" class="option-select">
+                            <option value="0.2">low similarity</option>
+                            <option value="0.3">medium similarity</option>
+                            <option value="0.4" selected>high similarity</option>
                         </select>
+                        <input type="hidden" name="force_refresh" id="force_refresh" value="false">
                     </div>
-                    <input type="hidden" name="force_refresh" id="force_refresh" value="false">
-                    <button type="submit">Search</button>
-                </form>
-            </div>
-            
-            {% if results %}
-            <div class="controls">
-                <div class="controls-left">
-                    <button class="button-secondary" onclick="document.getElementById('force_refresh').value='true'; document.querySelector('.search-form').submit();">
-                        Refresh Results
+                    <button type="submit" class="cta-button">
+                        <i class="fas fa-search"></i> 
+                        track this topic
                     </button>
-                </div>
-            </div>
-            {% endif %}
-            
-            {% elif active_tab == 'history' %}
-            <h1>Search History</h1>
-            
-            <div class="controls">
-                <div class="controls-left">
-                    {% if query %}
-                    <h2>Results for "{{ query }}"</h2>
-                    {% else %}
-                    <p>Select a search from the sidebar to view results.</p>
-                    {% endif %}
-                </div>
-                <div class="controls-right">
-                    {% if query %}
-                    <button class="button-secondary" onclick="deleteHistoryItem('{{ query }}')">Delete This Search</button>
-                    {% endif %}
-                    <button class="button-danger" onclick="clearHistory()">Clear All History</button>
-                </div>
-            </div>
-            
-            {% if query and search_time %}
-            <div class="timeline-header">
-                <div>
-                    <p>{{ search_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
-                    <p>Current time: <span class="live-ticker">--:--:--</span></p>
-                    <p>Auto-refresh in: <span class="reload-timer">10:00</span></p>
-                </div>
-            </div>
-            {% endif %}
-            {% endif %}
-            
-            {% if error %}
-            <div class="error">
-                {{ error }}
-            </div>
-            {% endif %}
-            
-            {% if results %}
-            <div class="timeline-container">
-                <div class="timeline-header">
-                    <h2>Results for "{{ query }}"</h2>
-                    <div>
-                        <p>{{ search_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
-                        <p>Current time: <span class="live-ticker">--:--:--</span></p>
-                        <p>Auto-refresh in: <span class="reload-timer">10:00</span></p>
-                    </div>
-                </div>
+                </form>
                 
-                {% set ns = namespace(current_day=None, current_day_summary=None) %}
-                
-                {% if topic_groups | length == 0 %}
-                <div class="no-results">
-                    <p>No news articles found for your query.</p>
-                </div>
-                {% endif %}
-                
-                {% for topic in topic_groups %}
-                    {% set day = topic.day_group %}
-                    
-                    {% if day != ns.current_day %}
-                        {% set ns.current_day = day %}
-                        {% set ns.current_day_summary = topic.day_summary %}
-                        <div class="timeline-day">
-                            {{ day.upper() }}
-                        </div>
-                        
-                        {% if topic.day_summary %}
-                        <div class="day-summary">
-                            <strong>Daily Summary:</strong> {{ topic.day_summary }}
-                        </div>
-                        {% endif %}
-                    {% endif %}
-                    
-                    <div class="timeline-item">
-                        <div class="topic-header" onclick="toggleTopic(this)">
-                            <span class="expand-icon">▶</span>
-                            <div class="topic-title">{{ topic.title }}</div>
-                            {% if topic.count > 1 %}
-                            <span class="topic-count">{{ topic.count }} articles</span>
-                            {% endif %}
-                            <div class="topic-time">{{ topic.newest_age }}</div>
-                        </div>
-                        
-                        <div class="topic-content">
-                            {% for article in topic.articles %}
-                                <div class="article-item">
-                                    <div class="timeline-source">{{ article.get('meta_url', {}).get('netloc', 'Unknown source') }}</div>
-                                    {% if loop.index > 1 %}
-                                        <div class="timeline-title">{{ article.get('title', 'No title') }}</div>
-                                    {% endif %}
-                                    <div class="timeline-desc">{{ article.get('description', 'No description available') }}</div>
-                                    <a href="{{ article.get('url', '#') }}" class="timeline-link" target="_blank">{{ article.get('url', 'No URL available') }}</a>
+                {% if history_entries %}
+                    <h2 style="margin: 40px 0 20px 0;">your briefs</h2>
+                    {% for entry in history_entries %}
+                        <div class="brief-card" onclick="window.location.href='/history/{{ entry.query }}'">
+                            <div class="brief-title">{{ entry.query }}</div>
+                            <div class="brief-meta">
+                                <span>updated {{ entry.timestamp|format_datetime }}</span>
+                                <div class="refresh-info">
+                                    <span class="reload-timer-label">auto-refresh in:</span>
+                                    <span class="reload-timer" data-query="{{ entry.query }}">--:--</span>
                                 </div>
-                            {% endfor %}
+                            </div>
+                            {% set has_summary = false %}
+                            {% if day_summaries %}
+                                {% for key, summary_entry in day_summaries.items() %}
+                                    {% if summary_entry.query == entry.query and summary_entry.summary %}
+                                        <p class="brief-summary">{{ summary_entry.summary }}</p>
+                                        {% set has_summary = true %}
+                                    {% endif %}
+                                {% endfor %}
+                            {% endif %}
+                            {% if not has_summary %}
+                                <p class="brief-summary">click to see the latest news about "{{ entry.query }}"</p>
+                            {% endif %}
                         </div>
+                    {% endfor %}
+                {% endif %}
+            {% elif active_tab == 'history' %}
+                {% if query %}
+                    <div class="brief-card expanded">
+                        <div class="brief-title">{{ query }}</div>
+                        <div class="brief-meta">
+                            <span>updated {{ search_time.strftime('%Y-%m-%d %H:%M') }}</span>
+                            <div class="refresh-info">
+                                <span class="reload-timer-label">auto-refresh in:</span>
+                                <span class="reload-timer" data-query="{{ query }}">--:--</span>
+                            </div>
+                        </div>
+                        
+                        {% if topic_groups and topic_groups|length > 0 and topic_groups[0].day_summary %}
+                            <p class="brief-summary">{{ topic_groups[0].day_summary }}</p>
+                        {% endif %}
+                        
+                        {% if results %}
+                            <div class="timeline-container">
+                                {% set ns = namespace(current_day=None, current_day_summary=None) %}
+                                
+                                {% if topic_groups | length == 0 %}
+                                    <div style="text-align: center; padding: 30px; color: #666;">
+                                        <p>no news articles found for this query.</p>
+                                    </div>
+                                {% endif %}
+                                
+                                {% for topic in topic_groups %}
+                                    {% set day = topic.day_group %}
+                                    
+                                    {% if day != ns.current_day %}
+                                        {% set ns.current_day = day %}
+                                        {% set ns.current_day_summary = topic.day_summary %}
+                                        <div class="timeline-day">
+                                            {{ day }}
+                                        </div>
+                                        
+                                        {% if topic.day_summary %}
+                                            <div class="day-summary">
+                                                {{ topic.day_summary }}
+                                            </div>
+                                        {% endif %}
+                                    {% endif %}
+                                    
+                                    <div class="timeline-item">
+                                        <div class="topic-header" onclick="toggleTopic(this)">
+                                            <span class="expand-icon">▶</span>
+                                            <div class="topic-title">{{ topic.title }}</div>
+                                            {% if topic.count > 1 %}
+                                                <span class="topic-count">{{ topic.count }} articles</span>
+                                            {% endif %}
+                                            <div class="topic-time">{{ topic.newest_age }}</div>
+                                        </div>
+                                        
+                                        <div class="topic-content">
+                                            {% for article in topic.articles %}
+                                                <div class="article-item">
+                                                    <div class="timeline-source">{{ article.get('meta_url', {}).get('netloc', 'unknown source') }}</div>
+                                                    {% if loop.index > 1 %}
+                                                        <div class="timeline-title">{{ article.get('title', 'no title') }}</div>
+                                                    {% endif %}
+                                                    <div class="timeline-desc">{{ article.get('description', 'no description available') }}</div>
+                                                    <a href="{{ article.get('url', '#') }}" class="timeline-link" target="_blank">{{ article.get('url', 'no url available') }}</a>
+                                                </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        {% endif %}
                     </div>
-                {% endfor %}
-            </div>
+                    
+                    <div style="margin-top: 20px; display: flex; gap: 10px;">
+                        <button class="cta-button" onclick="window.location.href='/'" style="background-color: #6b7280;">
+                            <i class="fas fa-arrow-left"></i> back to briefs
+                        </button>
+                        <button class="cta-button" onclick="forceRefresh('{{ query }}')">
+                            <i class="fas fa-sync-alt"></i> refresh now
+                        </button>
+                        <button class="cta-button" onclick="deleteHistoryItem('{{ query }}')">
+                            <i class="fas fa-trash"></i> delete this brief
+                        </button>
+                    </div>
+                {% else %}
+                    <div style="text-align: center; padding: 50px; color: #666;">
+                        <h2>no briefs yet</h2>
+                        <p style="margin: 20px 0;">add a search term to start tracking news topics</p>
+                        <button class="cta-button" onclick="window.location.href='/'">
+                            <i class="fas fa-plus"></i> add new brief
+                        </button>
+                    </div>
+                {% endif %}
             {% endif %}
+        </main>
+    </div>
+    
+    <!-- Floating action button for adding new briefs -->
+    <div class="fab-button" onclick="openNewBriefModal()">
+        <i class="fas fa-plus"></i>
+    </div>
+    
+    <!-- Modal for adding new briefs -->
+    <div id="newBriefModal" class="modal">
+        <div class="modal-content">
+            <h2 class="modal-title">add new brief</h2>
+            <form method="post" action="/" id="modalSearchForm">
+                <input type="text" name="query" placeholder="search for a topic..." class="search-box" required>
+                <div class="search-options">
+                    <select name="count" class="option-select">
+                        <option value="10">10 results</option>
+                        <option value="20">20 results</option>
+                        <option value="30">30 results</option>
+                        <option value="50" selected>50 results</option>
+                    </select>
+                    <select name="freshness" class="option-select">
+                        <option value="pd">past day</option>
+                        <option value="pw">past week</option>
+                        <option value="pm">past month</option>
+                        <option value="py" selected>past year</option>
+                    </select>
+                    <select name="similarity_threshold" class="option-select">
+                        <option value="0.2">low similarity</option>
+                        <option value="0.3">medium similarity</option>
+                        <option value="0.4" selected>high similarity</option>
+                    </select>
+                    <input type="hidden" name="force_refresh" value="false">
+                </div>
+                <div class="modal-buttons">
+                    <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">cancel</button>
+                    <button type="submit" class="modal-button submit-button">add brief</button>
+                </div>
+            </form>
         </div>
     </div>
     
@@ -1512,7 +1708,7 @@ if __name__ == '__main__':
         }
         
         function deleteHistoryItem(query) {
-            if (confirm('Are you sure you want to delete this search from history?')) {
+            if (confirm('are you sure you want to delete this brief?')) {
                 fetch('/api/delete_history/' + encodeURIComponent(query), {
                     method: 'POST',
                 })
@@ -1526,7 +1722,7 @@ if __name__ == '__main__':
         }
         
         function clearHistory() {
-            if (confirm('Are you sure you want to clear all search history?')) {
+            if (confirm('are you sure you want to clear all briefs?')) {
                 fetch('/api/clear_history', {
                     method: 'POST',
                 })
@@ -1538,141 +1734,202 @@ if __name__ == '__main__':
                 });
             }
         }
+        
+        function openNewBriefModal() {
+            document.getElementById('newBriefModal').style.display = 'flex';
+        }
+        
+        function closeNewBriefModal() {
+            document.getElementById('newBriefModal').style.display = 'none';
+        }
 
         let reloadTimer;
         let currentSeconds = 600; // 10 minutes default
         let currentQuery = ""; // Store current query for timer management
+        let timerIntervals = {}; // Store intervals for each query
         
         // Initialize functions when page loads
         document.addEventListener('DOMContentLoaded', function() {
-            updateLiveTicker();
-            
             // Get the current query from the page
-            const queryElements = document.querySelectorAll('h2');
+            const queryElements = document.querySelectorAll('.brief-title');
             for (let element of queryElements) {
-                if (element.textContent.startsWith('Results for "')) {
-                    currentQuery = element.textContent.replace('Results for "', '').replace('"', '');
+                if (window.location.pathname.includes('/history/')) {
+                    currentQuery = element.textContent.trim();
                     break;
                 }
             }
             
-            // Only start the reload timer if we're on a results or history page with results
-            if (document.querySelector('.timeline-container') || 
-                (document.querySelector('[data-active-tab="history"]') && document.querySelector('.reload-timer'))) {
-                startReloadTimer();
+            // Initialize all timers on page
+            const timerElements = document.getElementsByClassName('reload-timer');
+            if (timerElements.length > 0) {
+                // If we're on a specific history page, just handle that one
+                if (currentQuery) {
+                    initializeTimer(currentQuery);
+                    timerIntervals[currentQuery] = setInterval(() => updateReloadTimer(currentQuery), 1000);
+                } else {
+                    // Otherwise initialize timers for all briefs on the home page
+                    for (let element of timerElements) {
+                        const query = element.getAttribute('data-query');
+                        if (query) {
+                            initializeTimer(query);
+                            timerIntervals[query] = setInterval(() => updateReloadTimer(query), 1000);
+                        }
+                    }
+                }
+            }
+            
+            // Close modal if clicked outside
+            window.onclick = function(event) {
+                const modal = document.getElementById('newBriefModal');
+                if (event.target == modal) {
+                    closeNewBriefModal();
+                }
             }
         });
         
-        // Function to update the live ticker
-        function updateLiveTicker() {
-            const tickerElements = document.getElementsByClassName('live-ticker');
-            if (tickerElements.length > 0) {
-                const now = new Date();
-                const timeString = now.toTimeString().split(' ')[0];
+        function initTimerForElement(element, query) {
+            const timerStartKey = `timerStart_${query}`;
+            const cycleStartKey = `cycleStart_${query}`;
+            
+            // Check if we have a stored cycle start time for this query
+            let cycleStartTime = localStorage.getItem(cycleStartKey);
+            let currentSecs = 600;
+            
+            if (cycleStartTime) {
+                // We have an existing cycle - use it
+                const now = new Date().getTime();
+                cycleStartTime = parseInt(cycleStartTime, 10);
                 
-                for (let element of tickerElements) {
-                    element.textContent = timeString;
-                }
+                // Calculate elapsed seconds since the start of this cycle
+                const elapsedSeconds = Math.floor((now - cycleStartTime) / 1000);
                 
-                // Update every second
-                setTimeout(updateLiveTicker, 1000);
+                // Calculate remaining seconds until next 10-minute mark (600 seconds)
+                currentSecs = Math.max(0, 600 - elapsedSeconds);
             }
+            
+            // Update the element with the current time
+            const minutes = Math.floor(currentSecs / 60);
+            const seconds = currentSecs % 60;
+            element.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
         }
         
-        // Function to handle the auto-reload timer
-        function startReloadTimer() {
-            const timerElements = document.getElementsByClassName('reload-timer');
-            if (timerElements.length > 0 && currentQuery) {
-                initializeTimer(currentQuery);
-                reloadTimer = setInterval(() => updateReloadTimer(currentQuery), 1000);
-            }
-        }
-
         function initializeTimer(query) {
             if (!query) return;
             
             // Use query-specific keys for localStorage
             const timerStartKey = `timerStart_${query}`;
-            const timerDurationKey = `timerDuration_${query}`;
+            const cycleStartKey = `cycleStart_${query}`;
             
-            // Check if we have a stored timer for this query
-            const timerStart = localStorage.getItem(timerStartKey);
-            const timerDuration = localStorage.getItem(timerDurationKey);
+            // Check if we have a stored cycle start time for this query
+            let cycleStartTime = localStorage.getItem(cycleStartKey);
             
-            if (timerStart && timerDuration) {
+            if (cycleStartTime) {
+                // We have an existing cycle - use it
                 const now = new Date().getTime();
-                const startTime = parseInt(timerStart, 10);
+                cycleStartTime = parseInt(cycleStartTime, 10);
                 
-                // Calculate elapsed seconds precisely from the start time
-                const elapsedSeconds = Math.floor((now - startTime) / 1000);
+                // Calculate elapsed seconds since the start of this cycle
+                const elapsedSeconds = Math.floor((now - cycleStartTime) / 1000);
                 
-                // Timer should refresh exactly every 10 minutes (600 seconds)
-                const totalCycles = Math.floor(elapsedSeconds / 600);
-                const nextCycleSeconds = (totalCycles + 1) * 600;
+                // Calculate remaining seconds until next 10-minute mark (600 seconds)
+                if (!window.timerSeconds) {
+                    window.timerSeconds = {};
+                }
+                window.timerSeconds[query] = Math.max(0, 600 - elapsedSeconds);
                 
-                // Calculate remaining seconds until next 10-minute mark
-                currentSeconds = nextCycleSeconds - elapsedSeconds;
-                
-                // If the timer is about to expire or has already expired, refresh now
-                if (currentSeconds <= 5) {
-                    clearInterval(reloadTimer);
-                    location.reload();
-                    return;
+                // If the timer is about to expire or has already expired, start a new cycle
+                if (window.timerSeconds[query] <= 5) {
+                    startNewCycle(query);
                 }
             } else {
-                // First search for this query - start a new 10-minute timer
-                currentSeconds = 600; // 10 minutes
-                localStorage.setItem(timerStartKey, new Date().getTime().toString());
-                localStorage.setItem(timerDurationKey, currentSeconds.toString());
+                // No existing cycle - start a new one
+                startNewCycle(query);
             }
             
             // Update the display immediately
             updateReloadTimer(query);
         }
         
-        function resetTimer(query) {
-            if (!query) return;
+        function startNewCycle(query) {
+            // Start a fresh 10-minute cycle
+            if (!window.timerSeconds) {
+                window.timerSeconds = {};
+            }
+            window.timerSeconds[query] = 600;
             
-            currentSeconds = 600; // 10 minutes
+            // Record when this cycle started
+            const now = new Date().getTime();
+            localStorage.setItem(`cycleStart_${query}`, now.toString());
             
-            // Use query-specific keys for localStorage
-            const timerStartKey = `timerStart_${query}`;
-            const timerDurationKey = `timerDuration_${query}`;
+            // Also update the original search time if this is the first time
+            if (!localStorage.getItem(`timerStart_${query}`)) {
+                localStorage.setItem(`timerStart_${query}`, now.toString());
+            }
             
-            localStorage.setItem(timerStartKey, new Date().getTime().toString());
-            localStorage.setItem(timerDurationKey, currentSeconds.toString());
+            console.log(`Starting new 10-minute refresh cycle for query: ${query}`);
         }
 
         function updateReloadTimer(query) {
             if (!query) return;
             
-            // Use query-specific keys for localStorage
-            const timerStartKey = `timerStart_${query}`;
-            const timerDurationKey = `timerDuration_${query}`;
-            
-            // Decrement only if we still have time left
-            if (currentSeconds > 0) {
-                currentSeconds--;
-                // Update stored timer value for this specific query
-                localStorage.setItem(timerDurationKey, currentSeconds.toString());
+            if (!window.timerSeconds) {
+                window.timerSeconds = {};
             }
             
-            const minutes = Math.floor(currentSeconds / 60);
-            const seconds = currentSeconds % 60;
+            // Initialize if not already set
+            if (window.timerSeconds[query] === undefined) {
+                initializeTimer(query);
+                return;
+            }
+            
+            // Decrement only if we still have time left
+            if (window.timerSeconds[query] > 0) {
+                window.timerSeconds[query]--;
+                
+                // Update the cycle info every 10 seconds to avoid too much localStorage writing
+                if (window.timerSeconds[query] % 10 === 0) {
+                    const now = new Date().getTime();
+                    const cycleStartTime = now - (600 - window.timerSeconds[query]) * 1000;
+                    localStorage.setItem(`cycleStart_${query}`, cycleStartTime.toString());
+                }
+            }
+            
+            const minutes = Math.floor(window.timerSeconds[query] / 60);
+            const seconds = window.timerSeconds[query] % 60;
             const timerString = `${minutes}:${seconds.toString().padStart(2, '0')}`;
             
-            const timerElements = document.getElementsByClassName('reload-timer');
+            const timerElements = document.querySelectorAll(`.reload-timer[data-query="${query}"]`);
             for (let element of timerElements) {
                 element.textContent = timerString;
             }
             
-            if (currentSeconds <= 0) {
-                clearInterval(reloadTimer);
-                // Clear the timer storage before reloading
-                localStorage.removeItem(timerStartKey);
-                localStorage.removeItem(timerDurationKey);
-                location.reload();
+            if (window.timerSeconds[query] <= 0) {
+                if (timerIntervals[query]) {
+                    clearInterval(timerIntervals[query]);
+                    delete timerIntervals[query];
+                }
+                
+                // Clear the cycle info before reloading - the timerStart stays to track when the original search happened
+                localStorage.removeItem(`cycleStart_${query}`);
+                
+                // Only reload the page if we're on the history page for this query
+                // or if it's the current query being displayed
+                if (window.location.pathname.includes(`/history/${query}`)) {
+                    location.reload();
+                } else {
+                    // For home page, just restart the cycle without reload
+                    startNewCycle(query);
+                    // Re-create the interval
+                    timerIntervals[query] = setInterval(() => updateReloadTimer(query), 1000);
+                }
             }
+        }
+
+        function forceRefresh(query) {
+            // Add force_refresh parameter to URL and reload
+            const url = new URL(window.location.href);
+            url.searchParams.set('force_refresh', 'true');
+            window.location.href = url.toString();
         }
     </script>
 </body>
@@ -1682,55 +1939,83 @@ if __name__ == '__main__':
         f.write('''<!DOCTYPE html>
 <html>
 <head>
-    <title>Error - News Timeline</title>
+    <title>error - news timeline</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
+        :root {
+            --bg-color: #f8f8f8;
+            --text-color: #333;
+            --accent-color: #6d28d9;
+            --secondary-color: #a78bfa;
+            --border-color: #e5e7eb;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: "Proxima Nova", Tahoma, -apple-system, BlinkMacSystemFont, sans-serif;
             line-height: 1.6;
-            color: #333;
-            max-width: 800px;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            max-width: 600px;
             margin: 0 auto;
-            padding: 20px;
-            background-color: #f9f9f9;
+            padding: 40px 20px;
             text-align: center;
         }
+        
+        h1, h2, h3, p, a {
+            text-transform: lowercase;
+        }
+        
         h1 {
-            color: #e74c3c;
+            color: #b91c1c;
+            margin-bottom: 20px;
+            font-size: 24px;
         }
+        
         .error-container {
-            background-color: #fff;
-            padding: 30px;
-            border-radius: 5px;
+            background-color: white;
+            padding: 40px;
+            border-radius: 8px;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            margin-top: 50px;
+            border: 1px solid #fee2e2;
         }
+        
         .error-message {
             margin-bottom: 30px;
             font-size: 18px;
+            color: #4b5563;
         }
+        
         .button {
             display: inline-block;
-            background-color: #3498db;
+            background-color: var(--accent-color);
             color: white;
             padding: 10px 20px;
             text-decoration: none;
-            border-radius: 4px;
-            font-weight: bold;
+            border-radius: 6px;
+            font-weight: 500;
+            transition: all 0.2s ease;
         }
+        
         .button:hover {
-            background-color: #2980b9;
+            background-color: #5b21b6;
+            transform: translateY(-2px);
         }
     </style>
 </head>
 <body>
     <div class="error-container">
-        <h1>Error</h1>
+        <h1>error</h1>
         <div class="error-message">
             {{ error }}
         </div>
-        <a href="/" class="button">Go Back</a>
+        <a href="/" class="button">go back</a>
     </div>
 </body>
 </html>''')
