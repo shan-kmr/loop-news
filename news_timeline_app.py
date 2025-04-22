@@ -499,8 +499,37 @@ def index():
 
 @app.route('/history', methods=['GET'])
 def history():
-    """View to display search history."""
-    return redirect(url_for('history_item', query=''))
+    """View to display search history with the latest search."""
+    history = load_search_history()
+    
+    # If there are history entries, redirect to the most recent one
+    history_entries = []
+    for key, entry in history.items():
+        history_entries.append({
+            'query': entry['query'],
+            'timestamp': entry['timestamp'],
+            'key': key
+        })
+    
+    # Sort history by most recent first
+    history_entries.sort(key=lambda x: x['timestamp'], reverse=True)
+    
+    if history_entries:
+        # Redirect to the most recent search
+        latest_query = history_entries[0]['query']
+        return redirect(url_for('history_item', query=latest_query))
+    else:
+        # No history yet, show empty history page
+        return render_template('index.html',
+                              query='',
+                              results=None,
+                              sorted_articles=[],
+                              topic_groups=[],
+                              search_time=None,
+                              error=None,
+                              history_entries=[],
+                              active_tab="history",
+                              user=current_user)
 
 @app.route('/history/<path:query>', methods=['GET'])
 def history_item(query):
