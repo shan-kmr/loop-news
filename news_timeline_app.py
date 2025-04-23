@@ -1840,6 +1840,30 @@ if __name__ == '__main__':
             display: flex;
             align-items: center;
         }
+        
+        .delete-button {
+            position: absolute;
+            bottom: 15px;
+            right: 15px;
+            color: #ff3b30;
+            opacity: 0.6;
+            font-size: 13px;
+            background: transparent;
+            border: none;
+            padding: 5px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .delete-button:hover {
+            opacity: 0.9;
+            background-color: rgba(255, 59, 48, 0.1);
+        }
+        
+        [data-theme="dark"] .delete-button {
+            color: #ff6b6b;
+        }
     </style>
 </head>
 <body>
@@ -1886,7 +1910,7 @@ if __name__ == '__main__':
                 
                 {% if history_entries %}
                     <h2 style="margin: 20px 0 20px 0;">your briefs 
-                        <span class="topic-count-display">{{ history_entries|length }}/3</span>
+                        <span class="topic-count-display">{{ history_entries|length }} out of 3 briefs used</span>
                     </h2>
                     {% if history_entries|length > 0 %}
                         <p class="latest-update">last updated {{ history_entries[0].timestamp|format_datetime('%b %d, %Y') }}</p>
@@ -1936,6 +1960,10 @@ if __name__ == '__main__':
                             {% if not has_summary %}
                                 {# Fallback text removed - now using the arrow in top-right instead #}
                             {% endif %}
+                            
+                            <button class="delete-button" onclick="event.stopPropagation(); deleteHistoryItem('{{ entry.query }}')">
+                                delete
+                            </button>
                         </div>
                     {% endfor %}
                 {% endif %}
