@@ -177,9 +177,8 @@ def track_client_event():
 @login_manager.user_loader
 def load_user(user_id):
     """Load a user from the database."""
-    from auth import get_user_by_id
-    user = get_user_by_id(user_id)
-    return user
+    from models import User
+    return User.get(user_id)
 
 def init_models():
     """Initialize the models based on provider configuration"""
