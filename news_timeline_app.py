@@ -20,10 +20,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import threading
 import queue
-from urllib.parse import urlparse
 import uuid
-import hashlib
-from pathlib import Path
+import shutil
+from urllib.parse import urlparse
 
 # Import configuration and models
 from config import *
@@ -78,106 +77,174 @@ llama_tokenizer = None
 brave_api = None
 
 # User activity tracking
-def get_user_analytics_file(user_email):
-    """Get the file path for a specific user's analytics data"""
-    # Create a hashed filename using email for privacy (but still identifiable)
-    email_hash = hashlib.md5(user_email.encode()).hexdigest()
-    analytics_dir = Path('user_data/analytics')
-    analytics_dir.mkdir(parents=True, exist_ok=True)
-    return analytics_dir / f"{email_hash}.json"
+class UserActivityLogger:
+    """Class to track and store user activity"""
+    
+    def __init__(self, log_dir="user_data/activity_logs"):
+        self.log_dir = log_dir
+        os.makedirs(log_dir, exist_ok=True)
+        self.session_cache = {}
+    
+    def get_user_log_file(self, user_id):
+        """Get the path to the user's log file"""
+        # Create a sanitized filename using the user ID
+        safe_user_id = str(user_id).replace('@', '_at_').replace('.', '_dot_')
+        return os.path.join(self.log_dir, f"{safe_user_id}_activity.json")
+    
+    def get_user_log(self, user_id):
+        """Get the existing log for a user, or create a new one"""
+        log_file = self.get_user_log_file(user_id)
+        
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, 'r') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                # If file is corrupt or missing, start fresh
+                pass
+        
+        # Initialize a new log structure
+        return {
+            "user_id": user_id,
+            "email": "",
+            "name": "",
+            "first_seen": datetime.now().isoformat(),
+            "sessions": [],
+            "briefs": {},
+            "page_views": [],
+            "actions": []
+        }
+    
+    def save_user_log(self, user_id, log_data):
+        """Save the user log to disk"""
+        log_file = self.get_user_log_file(user_id)
+        with open(log_file, 'w') as f:
+            json.dump(log_data, ensure_ascii=False, indent=2, default=str, fp=f)
+    
+    def get_session_id(self, user_id):
+        """Get the current session ID for a user, creating a new one if needed"""
+        if user_id not in self.session_cache:
+            self.session_cache[user_id] = str(uuid.uuid4())
+        return self.session_cache[user_id]
+    
+    def log_login(self, user_id, email, name, success):
+        """Log a user login attempt"""
+        log_data = self.get_user_log(user_id)
+        
+        # Update basic user info
+        log_data["email"] = email
+        log_data["name"] = name
+        
+        # Create a new session
+        session_id = self.get_session_id(user_id)
+        session_data = {
+            "session_id": session_id,
+            "login_time": datetime.now().isoformat(),
+            "login_success": success,
+            "user_agent": request.user_agent.string,
+            "ip_address": request.remote_addr,
+            "logout_time": None,
+            "duration_seconds": 0
+        }
+        
+        log_data["sessions"].append(session_data)
+        self.save_user_log(user_id, log_data)
+        return session_id
+    
+    def log_logout(self, user_id):
+        """Log a user logout"""
+        log_data = self.get_user_log(user_id)
+        session_id = self.get_session_id(user_id)
+        
+        # Find and update the current session
+        for session in reversed(log_data["sessions"]):
+            if session["session_id"] == session_id and session["logout_time"] is None:
+                session["logout_time"] = datetime.now().isoformat()
+                # Calculate session duration
+                login_time = datetime.fromisoformat(session["login_time"])
+                logout_time = datetime.fromisoformat(session["logout_time"])
+                session["duration_seconds"] = (logout_time - login_time).total_seconds()
+                break
+        
+        self.save_user_log(user_id, log_data)
+        # Clear the session from cache
+        if user_id in self.session_cache:
+            del self.session_cache[user_id]
+    
+    def log_page_view(self, user_id, page, query_params=None):
+        """Log a page view"""
+        if not user_id:
+            return  # Skip logging for anonymous users
+        
+        log_data = self.get_user_log(user_id)
+        session_id = self.get_session_id(user_id)
+        
+        view_data = {
+            "session_id": session_id,
+            "timestamp": datetime.now().isoformat(),
+            "page": page,
+            "query_params": query_params or {},
+            "referrer": request.referrer
+        }
+        
+        log_data["page_views"].append(view_data)
+        self.save_user_log(user_id, log_data)
+    
+    def log_brief_action(self, user_id, action_type, brief_query, details=None):
+        """Log an action related to a brief"""
+        if not user_id:
+            return  # Skip logging for anonymous users
+        
+        log_data = self.get_user_log(user_id)
+        session_id = self.get_session_id(user_id)
+        
+        # Initialize brief tracking if needed
+        if brief_query not in log_data["briefs"]:
+            log_data["briefs"][brief_query] = {
+                "created": datetime.now().isoformat(),
+                "actions": []
+            }
+        
+        action_data = {
+            "session_id": session_id,
+            "timestamp": datetime.now().isoformat(),
+            "action": action_type,
+            "details": details or {}
+        }
+        
+        log_data["briefs"][brief_query]["actions"].append(action_data)
+        
+        # Also add to the general actions log
+        general_action = action_data.copy()
+        general_action["brief_query"] = brief_query
+        log_data["actions"].append(general_action)
+        
+        self.save_user_log(user_id, log_data)
+    
+    def log_user_action(self, user_id, action_type, details=None):
+        """Log a general user action"""
+        if not user_id:
+            return  # Skip logging for anonymous users
+        
+        log_data = self.get_user_log(user_id)
+        session_id = self.get_session_id(user_id)
+        
+        action_data = {
+            "session_id": session_id,
+            "timestamp": datetime.now().isoformat(),
+            "action": action_type,
+            "details": details or {}
+        }
+        
+        log_data["actions"].append(action_data)
+        self.save_user_log(user_id, log_data)
 
-def load_user_analytics(user_email):
-    """Load analytics data for a specific user"""
-    analytics_file = get_user_analytics_file(user_email)
-    if analytics_file.exists():
-        try:
-            with open(analytics_file, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error loading analytics for {user_email}: {e}")
-            return {"email": user_email, "events": []}
-    return {"email": user_email, "events": []}
-
-def save_user_analytics(user_email, analytics_data):
-    """Save analytics data for a specific user"""
-    analytics_file = get_user_analytics_file(user_email)
-    try:
-        with open(analytics_file, 'w') as f:
-            json.dump(analytics_data, f, indent=2)
-    except Exception as e:
-        print(f"Error saving analytics for {user_email}: {e}")
-
-def track_user_event(user_email, event_type, event_data=None):
-    """Track a user event and save it to the user's analytics file"""
-    if not user_email:
-        return  # Don't track events for anonymous users
-    
-    # Load existing analytics
-    analytics = load_user_analytics(user_email)
-    
-    # Add the new event
-    event = {
-        "timestamp": datetime.now().isoformat(),
-        "type": event_type,
-        "data": event_data or {}
-    }
-    
-    # Add to events list
-    analytics["events"].append(event)
-    
-    # Save updated analytics
-    save_user_analytics(user_email, analytics)
-    
-    print(f"Tracked event '{event_type}' for user {user_email}")
-
-# Hook into request flow for session tracking
-@app.before_request
-def before_request():
-    """Track new sessions and ensure user info is properly set"""
-    # Only run on non-static routes
-    if request.endpoint and not request.endpoint.startswith('static'):
-        # Check if this is a new session for tracking
-        if current_user.is_authenticated and 'last_activity' not in session:
-            # Track login/new session
-            track_user_event(current_user.email, "login", {
-                "user_agent": request.headers.get('User-Agent', ''),
-                "ip": request.remote_addr,
-                "method": "session_established"
-            })
-            session['last_activity'] = datetime.now().isoformat()
-
-@app.route('/api/track', methods=['POST'])
-def track_client_event():
-    """API endpoint to track client-side events"""
-    # Require authentication
-    if not current_user.is_authenticated:
-        return jsonify({"success": False, "error": "Authentication required"}), 403
-    
-    data = request.json
-    event_type = data.get('event_type')
-    event_data = data.get('event_data', {})
-    
-    if not event_type:
-        return jsonify({"success": False, "error": "event_type is required"}), 400
-    
-    # Track the event
-    if event_type == 'batch' and 'events' in event_data:
-        # Handle batch events
-        for event in event_data['events']:
-            sub_type = event.get('event_type')
-            sub_data = event.get('event_data', {})
-            if sub_type:
-                track_user_event(current_user.email, sub_type, sub_data)
-    else:
-        # Track single event
-        track_user_event(current_user.email, event_type, event_data)
-    
-    return jsonify({"success": True})
+# Initialize the activity logger
+activity_logger = UserActivityLogger()
 
 @login_manager.user_loader
 def load_user(user_id):
-    """Load a user from the database."""
-    from models import User
+    """Load user from storage for Flask-Login"""
     return User.get(user_id)
 
 def init_models():
@@ -653,14 +720,6 @@ def index():
         if len(unique_queries) >= 3 and query not in unique_queries:
             error = "You've reached the maximum of 3 briefs. Please remove one before adding another."
         elif query:
-            # Track brief creation attempt
-            if current_user.is_authenticated:
-                track_user_event(current_user.email, "brief_creation_attempt", {
-                    "query": query,
-                    "count": count,
-                    "freshness": freshness
-                })
-            
             # Check if we already have cached results that are still valid
             cache_key = f"{query}_{count}_{freshness}"
             cached_entry = history.get(cache_key)
@@ -785,16 +844,6 @@ def index():
                             'results': results,
                             'day_summaries': day_summaries
                         }
-                        
-                        # Track successful brief creation
-                        if current_user.is_authenticated:
-                            track_user_event(current_user.email, "brief_created", {
-                                "query": query,
-                                "count": count,
-                                "freshness": freshness,
-                                "article_count": len(results.get('results', [])) if results else 0
-                            })
-                        
                         save_search_history(history)
                         print(f"Cached new results for query: '{query}' with {len(day_summaries)} summaries")
                 except Exception as e:
@@ -812,13 +861,6 @@ def index():
     # Sort history by most recent first
     history_entries.sort(key=lambda x: x['timestamp'], reverse=True)
     
-    # Track page view if user is authenticated
-    if current_user.is_authenticated:
-        track_user_event(current_user.email, "page_view", {
-            "page": "home",
-            "referrer": request.referrer
-        })
-    
     return render_template('index.html', 
                           query=query,
                           results=results, 
@@ -833,7 +875,7 @@ def index():
 
 @app.route('/history', methods=['GET'])
 def history():
-    """Display the history page with all search history."""
+    """View to display search history with the latest search."""
     history = load_search_history()
     
     # If there are history entries, redirect to the most recent one
@@ -867,7 +909,7 @@ def history():
 
 @app.route('/history/<path:query>', methods=['GET'])
 def history_item(query):
-    """Display the history item for a specific query."""
+    """View to display a specific history item."""
     # Load history
     history = load_search_history()
     
@@ -1027,16 +1069,6 @@ def history_item(query):
                     'results': results,
                     'day_summaries': day_summaries
                 }
-                
-                # Track successful brief creation
-                if current_user.is_authenticated:
-                    track_user_event(current_user.email, "brief_created", {
-                        "query": query,
-                        "count": count,
-                        "freshness": freshness,
-                        "article_count": len(results.get('results', [])) if results else 0
-                    })
-                
                 save_search_history(history)
                 print(f"Cached new results for query: '{query}' with {len(day_summaries)} summaries")
         except Exception as e:
@@ -1045,14 +1077,6 @@ def history_item(query):
     # Ensure we always have a search_time for the ticker to work
     if search_time is None:
         search_time = datetime.now()
-    
-    # Track page view with query
-    if current_user.is_authenticated:
-        track_user_event(current_user.email, "page_view", {
-            "page": "history_item",
-            "query": query,
-            "referrer": request.referrer
-        })
     
     return render_template('index.html', 
                           query=current_query, 
@@ -1069,7 +1093,7 @@ def history_item(query):
 @app.route('/api/delete_history/<path:query>', methods=['POST'])
 @login_required
 def delete_history_item(query):
-    """Delete an item from the search history."""
+    """API endpoint to delete a history item."""
     history = load_search_history()
     
     # Find and remove the history item
@@ -1082,11 +1106,6 @@ def delete_history_item(query):
         history.pop(key, None)
     
     save_search_history(history)
-    
-    # Track deletion
-    track_user_event(current_user.email, "delete_brief", {
-        "query": query
-    })
     
     return jsonify({'success': True})
 
@@ -1370,13 +1389,6 @@ def request_access_redirect():
 @app.route('/raison-detre', methods=['GET'])
 def raison_detre():
     """Display the raison d'être page"""
-    # Track page view
-    if current_user.is_authenticated:
-        track_user_event(current_user.email, "page_view", {
-            "page": "raison_detre",
-            "referrer": request.referrer
-        })
-    
     # Get history entries for sidebar if needed
     history_entries = []
     history = load_search_history()
@@ -1396,387 +1408,72 @@ def raison_detre():
         error=None
     )
 
-@app.route('/admin/analytics', methods=['GET'])
+# Track user logout
+@app.route('/auth/logout')
 @login_required
-def admin_analytics():
-    """Admin-only analytics dashboard"""
-    # Verify this is an admin or owner email
-    if not hasattr(current_user, 'email') or not current_user.email:
-        return redirect(url_for('index'))
+def track_logout():
+    """Track user logout before actual logout happens"""
+    if current_user.is_authenticated:
+        activity_logger.log_logout(current_user.id)
+    return redirect(url_for('auth.logout'))
+
+# Request lifecycle hooks for tracking
+@app.before_request
+def track_request():
+    """Track each request to the application"""
+    if current_user.is_authenticated:
+        # Track page view
+        query_params = dict(request.args)
+        activity_logger.log_page_view(
+            current_user.id,
+            request.path,
+            query_params
+        )
+        
+        # Update session timestamp to track activity
+        session['last_activity'] = datetime.now().isoformat()
+
+@app.after_request
+def after_request_callback(response):
+    """Process after each request"""
+    return response
+
+# Extend the User model to handle activity tracking
+original_user_loader = login_manager.user_loader
+
+@login_manager.user_loader
+def user_loader_with_tracking(user_id):
+    """Custom user loader that also tracks user login activity"""
+    user = original_user_loader(user_id)
+    if user:
+        # Update the user's activity log
+        if session.get('logged_in_tracked') != user_id:
+            activity_logger.log_login(user.id, user.email, user.name, True)
+            session['logged_in_tracked'] = user_id
+    return user
+
+# New API endpoint for tracking client-side events
+@app.route('/api/track_activity', methods=['POST'])
+def track_activity():
+    """API endpoint for tracking client-side user activity"""
+    if not current_user.is_authenticated:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
     
-    # Ensure only authorized users can access analytics
-    authorized_emails = ['shantanu.kum97@gmail.com']  # Add your email here
-    if current_user.email not in authorized_emails:
-        flash('You do not have permission to access analytics.', 'error')
-        return redirect(url_for('index'))
+    data = request.get_json()
+    action_type = data.get('action_type')
+    details = data.get('details', {})
+    brief_query = data.get('brief_query')
     
-    # Get all analytics files
-    analytics_dir = Path('user_data/analytics')
-    analytics_dir.mkdir(parents=True, exist_ok=True)
+    if not action_type:
+        return jsonify({"success": False, "error": "Missing action_type"}), 400
     
-    all_user_data = []
-    summary_stats = {
-        'total_users': 0,
-        'total_sessions': 0,
-        'total_page_views': 0,
-        'total_brief_views': 0,
-        'total_button_clicks': 0,
-        'avg_session_time': 0,
-        'avg_briefs_per_user': 0,
-        'most_viewed_briefs': {},
-        'popular_pages': {}
-    }
+    # Log based on whether this is a brief-specific action
+    if brief_query:
+        activity_logger.log_brief_action(current_user.id, action_type, brief_query, details)
+    else:
+        activity_logger.log_user_action(current_user.id, action_type, details)
     
-    # Process each user's analytics file
-    for file_path in analytics_dir.glob('*.json'):
-        try:
-            with open(file_path, 'r') as f:
-                user_data = json.load(f)
-                
-                # Basic validation
-                if 'email' not in user_data or 'events' not in user_data:
-                    continue
-                
-                # Count sessions
-                sessions = [e for e in user_data['events'] if e['type'] == 'session_start']
-                
-                # Count page views
-                page_views = [e for e in user_data['events'] if e['type'] == 'page_view']
-                
-                # Count brief views (either page_view with brief_detail or brief_time_spent events)
-                brief_views = [
-                    e for e in user_data['events'] 
-                    if (e['type'] == 'page_view' and e.get('data', {}).get('page') == 'brief_detail') 
-                    or e['type'] == 'brief_time_spent'
-                ]
-                
-                # Count button clicks
-                button_clicks = [e for e in user_data['events'] if e['type'] == 'button_click']
-                
-                # Calculate average session time
-                session_times = []
-                for e in user_data['events']:
-                    if e['type'] == 'session_end' and 'time_spent_seconds' in e.get('data', {}):
-                        session_times.append(e['data']['time_spent_seconds'])
-                
-                avg_session_time = sum(session_times) / len(session_times) if session_times else 0
-                
-                # Count briefs created/viewed
-                briefs = set()
-                for e in user_data['events']:
-                    if e['type'] == 'brief_time_spent' and 'query' in e.get('data', {}):
-                        briefs.add(e['data']['query'])
-                        
-                        # Add to most viewed briefs
-                        query = e['data']['query']
-                        if query not in summary_stats['most_viewed_briefs']:
-                            summary_stats['most_viewed_briefs'][query] = 0
-                        summary_stats['most_viewed_briefs'][query] += 1
-                
-                # Track popular pages
-                for e in user_data['events']:
-                    if e['type'] == 'page_view' and 'page' in e.get('data', {}):
-                        page = e['data']['page']
-                        if page not in summary_stats['popular_pages']:
-                            summary_stats['popular_pages'][page] = 0
-                        summary_stats['popular_pages'][page] += 1
-                
-                # Add to user data list
-                all_user_data.append({
-                    'email': user_data['email'],
-                    'sessions': len(sessions),
-                    'page_views': len(page_views),
-                    'brief_views': len(brief_views),
-                    'button_clicks': len(button_clicks),
-                    'avg_session_time': avg_session_time,
-                    'briefs': len(briefs),
-                    'latest_activity': max([e.get('timestamp', '2000-01-01') for e in user_data['events']]) if user_data['events'] else None,
-                    'first_activity': min([e.get('timestamp', '2100-01-01') for e in user_data['events']]) if user_data['events'] else None,
-                })
-                
-                # Update summary stats
-                summary_stats['total_users'] += 1
-                summary_stats['total_sessions'] += len(sessions)
-                summary_stats['total_page_views'] += len(page_views)
-                summary_stats['total_brief_views'] += len(brief_views)
-                summary_stats['total_button_clicks'] += len(button_clicks)
-                
-        except Exception as e:
-            print(f"Error processing analytics file {file_path}: {e}")
-    
-    # Calculate summary averages
-    if summary_stats['total_users'] > 0:
-        summary_stats['avg_briefs_per_user'] = sum(user['briefs'] for user in all_user_data) / summary_stats['total_users']
-    
-    if summary_stats['total_sessions'] > 0:
-        summary_stats['avg_session_time'] = sum(user['avg_session_time'] for user in all_user_data if user['avg_session_time']) / len([u for u in all_user_data if u['avg_session_time']])
-    
-    # Sort most viewed briefs
-    summary_stats['most_viewed_briefs'] = dict(sorted(
-        summary_stats['most_viewed_briefs'].items(), 
-        key=lambda x: x[1], 
-        reverse=True
-    )[:10])  # Top 10 briefs
-    
-    # Sort popular pages
-    summary_stats['popular_pages'] = dict(sorted(
-        summary_stats['popular_pages'].items(), 
-        key=lambda x: x[1], 
-        reverse=True
-    ))
-    
-    # Sort users by page views
-    all_user_data.sort(key=lambda x: x['page_views'], reverse=True)
-    
-    # Return the analytics dashboard
-    return render_template_string('''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Admin Analytics Dashboard</title>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
-    <style>
-        :root {
-            --bg-color: #f8f8f8;
-            --text-color: #333;
-            --accent-color: #dad3c8;
-            --secondary-color: #c5bcb1;
-            --border-color: #e5e7eb;
-            --card-bg: #ffffff;
-        }
-        
-        [data-theme="dark"] {
-            --bg-color: #121212;
-            --text-color: #ffffff;
-            --accent-color: #4a4a4a;
-            --secondary-color: #333333;
-            --border-color: #2c2c2c;
-            --card-bg: #1e1e1e;
-        }
-        
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-        
-        body {
-            font-family: "Proxima Nova", Tahoma, -apple-system, BlinkMacSystemFont, sans-serif;
-            line-height: 1.6;
-            color: var(--text-color);
-            background-color: var(--bg-color);
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 0 20px;
-        }
-        
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 20px 0;
-            border-bottom: 1px solid var(--border-color);
-            margin-bottom: 30px;
-        }
-        
-        h1 {
-            font-size: 24px;
-            margin-bottom: 20px;
-        }
-        
-        h2 {
-            font-size: 18px;
-            margin: 15px 0;
-        }
-        
-        .dashboard-container {
-            display: grid;
-            grid-template-columns: repeat(12, 1fr);
-            gap: 20px;
-        }
-        
-        .summary-card {
-            background-color: var(--card-bg);
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            border: 1px solid var(--border-color);
-            grid-column: span 3;
-        }
-        
-        .chart-card {
-            background-color: var(--card-bg);
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            border: 1px solid var(--border-color);
-            grid-column: span 6;
-        }
-        
-        .full-width-card {
-            background-color: var(--card-bg);
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            border: 1px solid var(--border-color);
-            grid-column: span 12;
-            margin-bottom: 20px;
-        }
-        
-        .stat-value {
-            font-size: 28px;
-            font-weight: bold;
-            margin: 10px 0;
-        }
-        
-        .stat-label {
-            font-size: 14px;
-            opacity: 0.7;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-        }
-        
-        th, td {
-            padding: 10px;
-            text-align: left;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        th {
-            background-color: var(--secondary-color);
-            color: var(--text-color);
-        }
-        
-        .user-row:hover {
-            background-color: var(--secondary-color);
-        }
-        
-        .back-button {
-            padding: 8px 16px;
-            background-color: var(--secondary-color);
-            color: var(--text-color);
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            text-decoration: none;
-            display: inline-block;
-            margin-top: 20px;
-        }
-        
-        .back-button:hover {
-            background-color: var(--accent-color);
-        }
-        
-        .chart-placeholder {
-            height: 200px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background-color: var(--secondary-color);
-            color: var(--text-color);
-            border-radius: 4px;
-            margin: 10px 0;
-        }
-    </style>
-</head>
-<body>
-    <header>
-        <h1>Analytics Dashboard</h1>
-        <a href="/" class="back-button">Back to Home</a>
-    </header>
-    
-    <div class="full-width-card">
-        <h2>Summary Statistics</h2>
-        <div class="dashboard-container">
-            <div class="summary-card">
-                <div class="stat-label">Total Users</div>
-                <div class="stat-value">{{ summary_stats.total_users }}</div>
-            </div>
-            <div class="summary-card">
-                <div class="stat-label">Total Sessions</div>
-                <div class="stat-value">{{ summary_stats.total_sessions }}</div>
-            </div>
-            <div class="summary-card">
-                <div class="stat-label">Page Views</div>
-                <div class="stat-value">{{ summary_stats.total_page_views }}</div>
-            </div>
-            <div class="summary-card">
-                <div class="stat-label">Avg. Session Time</div>
-                <div class="stat-value">{{ "%0.1f"|format(summary_stats.avg_session_time / 60) }} min</div>
-            </div>
-        </div>
-    </div>
-    
-    <div class="dashboard-container">
-        <div class="chart-card">
-            <h2>Most Viewed Briefs</h2>
-            <table>
-                <tr>
-                    <th>Brief Query</th>
-                    <th>Views</th>
-                </tr>
-                {% for query, count in summary_stats.most_viewed_briefs.items() %}
-                <tr>
-                    <td>{{ query }}</td>
-                    <td>{{ count }}</td>
-                </tr>
-                {% endfor %}
-            </table>
-        </div>
-        
-        <div class="chart-card">
-            <h2>Popular Pages</h2>
-            <table>
-                <tr>
-                    <th>Page</th>
-                    <th>Views</th>
-                </tr>
-                {% for page, count in summary_stats.popular_pages.items() %}
-                <tr>
-                    <td>{{ page }}</td>
-                    <td>{{ count }}</td>
-                </tr>
-                {% endfor %}
-            </table>
-        </div>
-    </div>
-    
-    <div class="full-width-card">
-        <h2>User Activity</h2>
-        <table>
-            <tr>
-                <th>Email</th>
-                <th>Sessions</th>
-                <th>Page Views</th>
-                <th>Brief Views</th>
-                <th>Briefs Created</th>
-                <th>Avg Session Time</th>
-                <th>Latest Activity</th>
-            </tr>
-            {% for user in all_user_data %}
-            <tr class="user-row">
-                <td>{{ user.email }}</td>
-                <td>{{ user.sessions }}</td>
-                <td>{{ user.page_views }}</td>
-                <td>{{ user.brief_views }}</td>
-                <td>{{ user.briefs }}</td>
-                <td>{{ "%0.1f"|format(user.avg_session_time / 60) }} min</td>
-                <td>{{ user.latest_activity.split('T')[0] if user.latest_activity else 'N/A' }}</td>
-            </tr>
-            {% endfor %}
-        </table>
-    </div>
-    
-    <a href="/" class="back-button">Back to Home</a>
-</body>
-</html>
-    ''', summary_stats=summary_stats, all_user_data=all_user_data)
+    return jsonify({"success": True})
 
 if __name__ == '__main__':
     # Initialize models in background threads to avoid blocking app startup
@@ -2972,8 +2669,33 @@ if __name__ == '__main__':
             }
         }
         
+        // User activity tracking helpers
+        function trackAction(actionType, details = {}, briefQuery = null) {
+            // Only track for authenticated users
+            {% if user.is_authenticated %}
+            fetch('/api/track_activity', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    action_type: actionType,
+                    details: details,
+                    brief_query: briefQuery
+                }),
+                // Use credentials to include session cookies
+                credentials: 'include'
+            }).catch(error => {
+                console.error('Activity tracking error:', error);
+            });
+            {% endif %}
+        }
+        
         function deleteHistoryItem(query) {
             if (confirm('are you sure you want to delete this brief?')) {
+                // Track the deletion
+                trackAction('delete_brief', {}, query);
+                
                 fetch('/api/delete_history/' + encodeURIComponent(query), {
                     method: 'POST',
                 })
@@ -2988,6 +2710,9 @@ if __name__ == '__main__':
         
         function clearHistory() {
             if (confirm('are you sure you want to clear all briefs?')) {
+                // Track clearing all briefs
+                trackAction('clear_all_briefs');
+                
                 fetch('/api/clear_history', {
                     method: 'POST',
                 })
@@ -3001,18 +2726,26 @@ if __name__ == '__main__':
         }
         
         function openNewBriefModal() {
+            // Track modal open
+            trackAction('open_brief_modal');
             document.getElementById('newBriefModal').style.display = 'flex';
         }
         
         function closeNewBriefModal() {
+            // Track modal close
+            trackAction('close_brief_modal');
             document.getElementById('newBriefModal').style.display = 'none';
         }
         
         function openRequestAccessModal() {
+            // Track request access modal open
+            trackAction('open_access_modal');
             document.getElementById('requestAccessModal').style.display = 'flex';
         }
         
         function closeRequestAccessModal() {
+            // Track request access modal close
+            trackAction('close_access_modal');
             document.getElementById('requestAccessModal').style.display = 'none';
         }
 
@@ -3021,8 +2754,114 @@ if __name__ == '__main__':
         let currentQuery = ""; // Store current query for timer management
         let timerIntervals = {}; // Store intervals for each query
         
+        // Track time spent on page
+        let lastActivityPing = Date.now();
+        let totalActiveTime = 0;
+        let isActive = true;
+        
+        function updateActiveTime() {
+            const now = Date.now();
+            const elapsed = (now - lastActivityPing) / 1000;
+            totalActiveTime += elapsed;
+            lastActivityPing = now;
+        }
+        
+        function initializeActivityTracking() {
+            // Track visibility changes
+            document.addEventListener('visibilitychange', function() {
+                if (document.visibilityState === 'visible') {
+                    isActive = true;
+                    trackAction('page_visible');
+                } else {
+                    isActive = false;
+                    updateActiveTime();
+                    trackAction('page_hidden', { active_seconds: totalActiveTime });
+                }
+            });
+            
+            // Track user activity periodically
+            setInterval(function() {
+                if (isActive) {
+                    updateActiveTime();
+                    
+                    // Send activity ping every minute
+                    const now = Date.now();
+                    if (now - lastActivityPing > 60000) { // 1 minute
+                        trackAction('active_time_update', { active_seconds: totalActiveTime });
+                        lastActivityPing = now;
+                    }
+                }
+            }, 5000); // Check every 5 seconds
+            
+            // Track button clicks
+            document.addEventListener('click', function(e) {
+                // Find closest clickable element
+                const button = e.target.closest('button, a, .brief-card, .timeline-item');
+                if (button) {
+                    const type = button.tagName.toLowerCase();
+                    const text = button.textContent.trim();
+                    let actionDetails = { element_type: type, text: text };
+                    
+                    // Get additional details based on element type
+                    if (button.classList.contains('brief-card')) {
+                        const query = button.querySelector('.brief-title')?.textContent.trim();
+                        if (query) {
+                            trackAction('view_brief', actionDetails, query);
+                            return;
+                        }
+                    }
+                    
+                    // Add element classes for better identification
+                    if (button.className) {
+                        actionDetails.classes = button.className;
+                    }
+                    
+                    // Add URL for links
+                    if (type === 'a' && button.href) {
+                        actionDetails.href = button.href;
+                    }
+                    
+                    trackAction('click', actionDetails);
+                }
+            });
+            
+            // Track form submissions
+            document.addEventListener('submit', function(e) {
+                const form = e.target;
+                if (form) {
+                    const formData = new FormData(form);
+                    const formDetails = {};
+                    
+                    // Convert FormData to object, omitting any sensitive fields
+                    for (let [key, value] of formData.entries()) {
+                        // Skip password fields
+                        if (!key.includes('password')) {
+                            formDetails[key] = value;
+                        }
+                    }
+                    
+                    // Track form submission
+                    trackAction('form_submit', {
+                        form_id: form.id || null,
+                        action: form.action,
+                        fields: formDetails
+                    });
+                }
+            });
+        }
+        
         // Initialize functions when page loads
         document.addEventListener('DOMContentLoaded', function() {
+            // Track page load
+            trackAction('page_load', {
+                url: window.location.pathname,
+                referrer: document.referrer,
+                query_params: Object.fromEntries(new URLSearchParams(window.location.search))
+            });
+            
+            // Initialize activity tracking
+            initializeActivityTracking();
+            
             // Get the current query from the page
             const queryElements = document.querySelectorAll('.brief-title');
             for (let element of queryElements) {
@@ -3262,6 +3101,9 @@ if __name__ == '__main__':
         }
 
         function forceRefresh(query) {
+            // Track the refresh action
+            trackAction('force_refresh', {}, query);
+            
             // Add force_refresh parameter to URL and reload
             const url = new URL(window.location.href);
             url.searchParams.set('force_refresh', 'true');
@@ -3284,306 +3126,6 @@ if __name__ == '__main__':
             // Always do a full page reload
             window.location.href = url.toString();
         }
-    </script>
-    
-    <!-- User activity tracking -->
-    <script>
-        // Activity tracking system
-        const UserActivityTracker = {
-            // Session start time
-            sessionStartTime: new Date(),
-            // Last activity time
-            lastActivityTime: new Date(),
-            // Current page
-            currentPage: window.location.pathname,
-            // Store brief interactions
-            briefInteractions: {},
-            // Queue for events waiting to be sent
-            eventQueue: [],
-            // Track if we're sending events currently
-            isSending: false,
-            
-            // Initialize the tracker
-            init: function() {
-                // Track session start
-                this.trackEvent('session_start', {
-                    url: window.location.href,
-                    referrer: document.referrer
-                });
-                
-                // Track page loaded
-                this.trackEvent('page_loaded', {
-                    page: this.getCurrentPageType(),
-                    url: window.location.href,
-                    load_time: window.performance ? Math.round(performance.now()) : null
-                });
-                
-                // Set up activity tracking
-                document.addEventListener('click', this.handleClick.bind(this));
-                
-                // Track scroll depth
-                window.addEventListener('scroll', this.debounce(this.trackScrollDepth.bind(this), 500));
-                
-                // Track time on page before leaving
-                window.addEventListener('beforeunload', this.handleBeforeUnload.bind(this));
-                
-                // Process queue periodically
-                setInterval(this.processQueue.bind(this), 5000);
-                
-                // Track brief views for time spent analysis
-                this.trackBriefViews();
-                
-                console.log('User activity tracking initialized');
-            },
-            
-            // Get the current page type
-            getCurrentPageType: function() {
-                const path = window.location.pathname;
-                if (path === '/' || path === '') return 'home';
-                if (path === '/history') return 'briefs_list';
-                if (path.includes('/history/')) return 'brief_detail';
-                if (path === '/raison-detre') return 'raison_detre';
-                return 'other';
-            },
-            
-            // Handle click events throughout the app
-            handleClick: function(e) {
-                // Find closest clickable element
-                const button = e.target.closest('button');
-                const anchor = e.target.closest('a');
-                const briefCard = e.target.closest('.brief-card');
-                
-                // Track button clicks
-                if (button) {
-                    const buttonText = button.textContent.trim();
-                    const buttonType = this.getButtonType(button);
-                    
-                    this.trackEvent('button_click', {
-                        button_text: buttonText,
-                        button_type: buttonType,
-                        page: this.getCurrentPageType()
-                    });
-                }
-                
-                // Track link clicks
-                if (anchor && !button) { // Don't double-track button links
-                    const linkText = anchor.textContent.trim();
-                    const linkHref = anchor.getAttribute('href');
-                    
-                    this.trackEvent('link_click', {
-                        link_text: linkText,
-                        link_href: linkHref,
-                        page: this.getCurrentPageType()
-                    });
-                }
-                
-                // Track brief card clicks on home page
-                if (briefCard && this.getCurrentPageType() === 'home' && !button && !anchor) {
-                    const briefTitle = briefCard.querySelector('.brief-title');
-                    if (briefTitle) {
-                        this.trackEvent('brief_card_click', {
-                            brief_title: briefTitle.textContent.trim()
-                        });
-                    }
-                }
-                
-                // Update last activity time
-                this.lastActivityTime = new Date();
-            },
-            
-            // Categorize button types
-            getButtonType: function(button) {
-                // Check classes and content
-                if (button.classList.contains('cta-button')) return 'cta';
-                if (button.classList.contains('submit-button')) return 'submit';
-                if (button.classList.contains('cancel-button')) return 'cancel';
-                if (button.classList.contains('delete-button')) return 'delete';
-                if (button.id === 'theme-toggle') return 'theme_toggle';
-                if (button.textContent.includes('refresh')) return 'refresh';
-                return 'other';
-            },
-            
-            // Track scroll depth
-            trackScrollDepth: function() {
-                const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-                const scrollHeight = document.documentElement.scrollHeight;
-                const clientHeight = document.documentElement.clientHeight;
-                
-                // Calculate scroll percentage
-                const scrollPercentage = Math.floor((scrollTop / (scrollHeight - clientHeight)) * 100);
-                
-                // Track every 25%
-                const milestone = Math.floor(scrollPercentage / 25) * 25;
-                
-                if (milestone > 0 && !this[`scrolled${milestone}`]) {
-                    this[`scrolled${milestone}`] = true;
-                    
-                    this.trackEvent('scroll_depth', {
-                        depth_percentage: milestone,
-                        page: this.getCurrentPageType()
-                    });
-                }
-                
-                // Update last activity time
-                this.lastActivityTime = new Date();
-            },
-            
-            // Track specific brief views for time spent analysis
-            trackBriefViews: function() {
-                const briefCards = document.querySelectorAll('.brief-card');
-                const pageType = this.getCurrentPageType();
-                
-                // For detail page, track the current brief
-                if (pageType === 'brief_detail') {
-                    const briefTitle = document.querySelector('.brief-title');
-                    if (briefTitle) {
-                        const query = briefTitle.textContent.trim();
-                        this.briefInteractions[query] = {
-                            startTime: new Date(),
-                            pageType: pageType
-                        };
-                    }
-                }
-                
-                // For home page, note all visible briefs
-                if (pageType === 'home') {
-                    briefCards.forEach(card => {
-                        const titleElement = card.querySelector('.brief-title');
-                        if (titleElement) {
-                            const query = titleElement.textContent.trim();
-                            this.briefInteractions[query] = {
-                                startTime: new Date(),
-                                pageType: pageType
-                            };
-                        }
-                    });
-                }
-            },
-            
-            // Before unload, track time spent on page
-            handleBeforeUnload: function() {
-                const endTime = new Date();
-                const timeSpent = Math.round((endTime - this.sessionStartTime) / 1000);
-                
-                // Track session end and time spent
-                this.trackEvent('session_end', {
-                    time_spent_seconds: timeSpent,
-                    page: this.getCurrentPageType()
-                });
-                
-                // Track time spent on specific briefs
-                for (const query in this.briefInteractions) {
-                    const interaction = this.briefInteractions[query];
-                    const briefTimeSpent = Math.round((endTime - interaction.startTime) / 1000);
-                    
-                    this.trackEvent('brief_time_spent', {
-                        query: query,
-                        time_spent_seconds: briefTimeSpent,
-                        page_type: interaction.pageType
-                    });
-                }
-                
-                // Force sync send the final events
-                this.processQueue(true);
-            },
-            
-            // Track a user event
-            trackEvent: function(eventType, eventData) {
-                if (!eventType) return;
-                
-                // Only track events if user is logged in
-                if (!this.isUserLoggedIn()) {
-                    return;
-                }
-                
-                // Add to event queue
-                this.eventQueue.push({
-                    event_type: eventType,
-                    event_data: eventData || {},
-                    timestamp: new Date().toISOString()
-                });
-                
-                // Process queue if not too many events
-                if (this.eventQueue.length >= 10) {
-                    this.processQueue();
-                }
-            },
-            
-            // Process the event queue
-            processQueue: function(forceSend = false) {
-                // Skip if no events or already sending or not logged in
-                if (this.eventQueue.length === 0 || this.isSending || !this.isUserLoggedIn()) {
-                    return;
-                }
-                
-                // Skip if not force sending and few events
-                if (!forceSend && this.eventQueue.length < 5) {
-                    return;
-                }
-                
-                // Mark as sending
-                this.isSending = true;
-                
-                // Get copy of events
-                const events = [...this.eventQueue];
-                
-                // Clear queue
-                this.eventQueue = [];
-                
-                // Send events to server
-                fetch('/api/track', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        event_type: 'batch',
-                        event_data: {
-                            events: events
-                        }
-                    })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    // Mark as no longer sending
-                    this.isSending = false;
-                    
-                    // If unsuccessful, push events back to queue
-                    if (!data.success) {
-                        this.eventQueue = [...events, ...this.eventQueue];
-                    }
-                })
-                .catch(error => {
-                    // On error, push events back to queue
-                    this.eventQueue = [...events, ...this.eventQueue];
-                    this.isSending = false;
-                });
-            },
-            
-            // Check if user is logged in
-            isUserLoggedIn: function() {
-                // Check for user avatar or name in the header
-                const userAvatar = document.querySelector('.user-avatar');
-                return userAvatar !== null && !document.body.textContent.includes('limited access');
-            },
-            
-            // Utility: Debounce function to limit event frequency
-            debounce: function(func, wait) {
-                let timeout;
-                return function() {
-                    const context = this;
-                    const args = arguments;
-                    clearTimeout(timeout);
-                    timeout = setTimeout(() => func.apply(context, args), wait);
-                };
-            }
-        };
-        
-        // Initialize user activity tracking when DOM is loaded
-        document.addEventListener('DOMContentLoaded', function() {
-            // Initialize activity tracking
-            UserActivityTracker.init();
-        });
     </script>
 </body>
 </html>''')
