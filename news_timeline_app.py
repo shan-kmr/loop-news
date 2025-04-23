@@ -1441,10 +1441,9 @@ def after_request_callback(response):
 # Extend the User model to handle activity tracking
 original_user_loader = login_manager.user_loader
 
-@login_manager.user_loader
 def user_loader_with_tracking(user_id):
     """Custom user loader that also tracks user login activity"""
-    user = original_user_loader(user_id)
+    user = load_user(user_id)  # Use the original load_user function directly
     if user:
         # Update the user's activity log
         if session.get('logged_in_tracked') != user_id:
@@ -1452,6 +1451,9 @@ def user_loader_with_tracking(user_id):
             activity_logger.log_login(user_id, getattr(user, 'email', ''), getattr(user, 'name', ''), True)
             session['logged_in_tracked'] = user_id
     return user
+
+# Now manually set the user_loader to our custom function
+login_manager.user_loader(user_loader_with_tracking)
 
 # New API endpoint for tracking client-side events
 @app.route('/api/track_activity', methods=['POST'])
