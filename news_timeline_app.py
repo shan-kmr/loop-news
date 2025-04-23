@@ -1222,19 +1222,21 @@ def raison_detre():
     """Display the raison d'être page"""
     # Get history entries for sidebar if needed
     history_entries = []
+    history = load_search_history()
+    
     if current_user.is_authenticated:
-        history = load_search_history()
         for key, entry in history.items():
             history_entries.append(entry)
         # Sort by timestamp descending
         history_entries.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
     
-    return render_template_string(
-        get_base_template(),
+    return render_template('index.html',
         active_tab='raison-detre',
         user=current_user,
         history_entries=history_entries,
-        history=load_search_history()
+        history=history,
+        query=None,
+        error=None
     )
 
 if __name__ == '__main__':
