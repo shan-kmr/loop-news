@@ -287,9 +287,9 @@ def update_current_day_results(query, count, freshness, old_results):
         brave_api = BraveNewsAPI(api_key=brave_api_key)
     
     try:
-        # For frequent refreshes (every 10 minutes), default to past day
+        # For frequent refreshes (every 60 minutes), default to past day
         # For longer term refreshes, use the original freshness or at least past week
-        refresh_freshness = 'pd'  # Default to past day for 10-minute refreshes
+        refresh_freshness = 'pd'  # Default to past day for 60-minute refreshes
         
         # If the original freshness was longer (pw, pm, py), keep that for non-frequent refreshes
         if freshness in ['pw', 'pm', 'py'] and CACHE_VALIDITY_HOURS > 24:
@@ -480,14 +480,22 @@ def index():
         print(f"Home page summary for '{summary['query']}' on {summary['day']}: {summary['summary'][:50]}...")
     
     # Process form submission
-    if request.method == 'POST':
+    if request.method == 'POST' and current_user.is_authenticated:
         query = request.form.get('query', '').strip()
         count = int(request.form.get('count', 10))
         freshness = request.form.get('freshness', 'pw')
         similarity_threshold = float(request.form.get('similarity_threshold', 0.3))
         force_refresh = request.form.get('force_refresh') == 'true'
         
-        if query:
+        # Check if user has reached the limit of 3 topics
+        unique_queries = set()
+        for entry in history.values():
+            if 'query' in entry:
+                unique_queries.add(entry['query'])
+        
+        if len(unique_queries) >= 3 and query not in unique_queries:
+            error = "You've reached the maximum of 3 briefs. Please remove one before adding another."
+        elif query:
             # Check if we already have cached results that are still valid
             cache_key = f"{query}_{count}_{freshness}"
             cached_entry = history.get(cache_key)
@@ -513,8 +521,8 @@ def index():
                     if time_diff.total_seconds() < CACHE_VALIDITY_HOURS * 3600:
                         use_cache = True
                         
-                        # Check if we need to refresh the current day's results (older than 10 minutes)
-                        if time_diff.total_seconds() > 600:  # 10 minutes in seconds
+                        # Check if we need to refresh the current day's results (older than 60 minutes)
+                        if time_diff.total_seconds() > 3600:  # 60 minutes in seconds
                             needs_day_refresh = True
                         
                         results = cached_entry['results']
@@ -1296,6 +1304,45 @@ if __name__ == '__main__':
             cursor: pointer;
             transition: all 0.2s ease;
             border: 1px solid var(--border-color);
+            position: relative;
+        }
+        
+        .home-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .brief-title {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text-color);
+            flex: 1;
+        }
+        
+        .card-right-elements {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .detail-link {
+            display: flex;
+            align-items: center;
+            color: var(--text-color);
+            opacity: 0.7;
+            font-size: 14px;
+            transition: opacity 0.2s ease;
+        }
+        
+        .detail-link .arrow {
+            margin-left: 5px;
+            font-size: 16px;
+        }
+        
+        .brief-card:hover .detail-link {
+            opacity: 0.9;
         }
         
         [data-theme="dark"] .brief-card {
@@ -1311,11 +1358,16 @@ if __name__ == '__main__':
             box-shadow: none;
         }
         
-        .brief-title {
-            font-size: 24px;
-            font-weight: 600;
-            margin-bottom: 10px;
-            color: var(--text-color);
+        /* Separate styles for detail page */
+        .detail-page .brief-meta {
+            display: flex;
+            justify-content: flex-end;
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 0;
+            position: absolute;
+            top: 24px;
+            right: 24px;
         }
         
         .brief-meta {
@@ -1342,16 +1394,17 @@ if __name__ == '__main__':
         .refresh-info {
             display: flex;
             align-items: center;
-            background-color: #f0f0f0;
+            background-color: transparent;
             padding: 6px 12px;
             border-radius: 20px;
             font-size: 14px;
-            color: #555;
-            align-self: flex-start;
+            color: var(--text-color);
+            opacity: 0.7;
+            white-space: nowrap;
         }
         
         [data-theme="dark"] .refresh-info {
-            background-color: #333333;
+            background-color: transparent;
             color: #ffffff;
         }
         
@@ -1359,10 +1412,12 @@ if __name__ == '__main__':
             font-weight: bold;
             color: var(--accent-color);
             margin-left: 4px;
+            opacity: 0.9;
         }
         
         [data-theme="dark"] .reload-timer {
             color: #ffffff;
+            opacity: 0.9;
         }
         
         .cta-button {
@@ -1495,13 +1550,33 @@ if __name__ == '__main__':
             align-items: center;
             margin-bottom: 15px;
             flex-wrap: wrap;
+            position: relative;
+        }
+        
+        .expand-icon {
+            display: inline-block;
+            width: 0;
+            height: 0;
+            border-style: solid;
+            border-width: 5px 0 5px 8px;
+            border-color: transparent transparent transparent var(--text-color);
+            margin-right: 10px;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            opacity: 0.6;
+            transform-origin: center;
+        }
+        
+        .topic-header.expanded .expand-icon {
+            transform: rotate(90deg);
+            opacity: 0.9;
         }
         
         .topic-title {
-            font-size: 18px;
+            font-size: 17px;
             font-weight: 600;
             margin-right: 10px;
             color: var(--text-color);
+            opacity: 0.85;
         }
         
         .topic-count {
@@ -1557,15 +1632,6 @@ if __name__ == '__main__':
             font-size: 14px;
             color: var(--accent-color);
             word-break: break-all;
-        }
-        
-        .expand-icon {
-            margin-right: 10px;
-            transition: transform 0.3s;
-        }
-        
-        .expanded .expand-icon {
-            transform: rotate(90deg);
         }
         
         .error {
@@ -1731,6 +1797,22 @@ if __name__ == '__main__':
             -webkit-box-shadow: none !important;
             -moz-box-shadow: none !important;
         }
+        
+        .article-url-summary {
+            font-size: 13px;
+            color: var(--text-color);
+            opacity: 0.7;
+            font-style: italic;
+            margin-top: 5px;
+            margin-bottom: 10px;
+        }
+        .topic-count-display {
+            font-size: 14px;
+            color: var(--text-color);
+            opacity: 0.7;
+            margin-left: 10px;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
@@ -1776,20 +1858,27 @@ if __name__ == '__main__':
                 <!-- Search form removed from here -->
                 
                 {% if history_entries %}
-                    <h2 style="margin: 20px 0 20px 0;">your briefs</h2>
+                    <h2 style="margin: 20px 0 20px 0;">your briefs 
+                        <span class="topic-count-display">{{ history_entries|length }}/3</span>
+                    </h2>
                     {% if history_entries|length > 0 %}
                         <p class="latest-update">last updated {{ history_entries[0].timestamp|format_datetime('%b %d, %Y') }}</p>
                     {% endif %}
                     {% for entry in history_entries %}
                         <div class="brief-card" onclick="window.location.href='/history/{{ entry.query }}'">
-                            <div class="brief-title">{{ entry.query }}</div>
-                            <div class="brief-meta">
-                                <!-- Date and time removed from here -->
-                                <div class="refresh-info">
-                                    <span class="reload-timer-label">auto-refresh in:</span>
-                                    <span class="reload-timer" data-query="{{ entry.query }}">--:--</span>
+                            <div class="home-card-header">
+                                <div class="brief-title">{{ entry.query }}</div>
+                                <div class="card-right-elements">
+                                    <div class="detail-link">
+                                        detailed analysis <span class="arrow">→</span>
+                                    </div>
+                                    <div class="refresh-info">
+                                        <span class="reload-timer-label">auto-refresh in:</span>
+                                        <span class="reload-timer" data-query="{{ entry.query }}">--:--</span>
+                                    </div>
                                 </div>
                             </div>
+                            
                             {% set has_summary = false %}
                             
                             {# First priority: Show Today's summary if available #}
@@ -1816,19 +1905,19 @@ if __name__ == '__main__':
                                 {% endfor %}
                             {% endif %}
                             
-                            {# Last resort: fallback text #}
+                            {# Last resort: fallback text - NOW REMOVED #}
                             {% if not has_summary %}
-                                <p class="brief-summary">click to view summary for "{{ entry.query }}"</p>
+                                {# Fallback text removed - now using the arrow in top-right instead #}
                             {% endif %}
                         </div>
                     {% endfor %}
                 {% endif %}
             {% elif active_tab == 'history' %}
                 {% if query %}
-                    <div class="brief-card expanded">
+                    <div class="brief-card expanded detail-page">
                         <div class="brief-title">{{ query }}</div>
                         <div class="brief-meta">
-                            <span>updated {{ search_time.strftime('%Y-%m-%d %H:%M') }}</span>
+                            <!-- Removed timestamp from here -->
                             <div class="refresh-info">
                                 <span class="reload-timer-label">auto-refresh in:</span>
                                 <span class="reload-timer" data-query="{{ query }}">--:--</span>
@@ -1871,7 +1960,7 @@ if __name__ == '__main__':
                                     
                                     <div class="timeline-item">
                                         <div class="topic-header" onclick="toggleTopic(this)">
-                                            <span class="expand-icon">▶</span>
+                                            <span class="expand-icon"></span>
                                             <div class="topic-title">{{ topic.title }}</div>
                                             {% if topic.count > 1 %}
                                                 <span class="topic-count">{{ topic.count }} articles</span>
@@ -1887,6 +1976,7 @@ if __name__ == '__main__':
                                                         <div class="timeline-title">{{ article.get('title', 'no title') }}</div>
                                                     {% endif %}
                                                     <div class="timeline-desc">{{ article.get('description', 'no description available') }}</div>
+                                                    <div class="article-url-summary">{{ article.get('title', 'no title').split(' - ')[0] if ' - ' in article.get('title', 'no title') else article.get('title', 'no title').split('|')[0] if '|' in article.get('title', 'no title') else article.get('title', 'no title') }}</div>
                                                     <a href="{{ article.get('url', '#') }}" class="timeline-link" target="_blank">{{ article.get('url', 'no url available') }}</a>
                                                 </div>
                                             {% endfor %}
@@ -1921,42 +2011,59 @@ if __name__ == '__main__':
         </main>
     </div>
     
-    <!-- Floating action button for adding new briefs -->
+    <!-- Floating action button for adding new briefs - only shown to logged in users with fewer than 3 topics -->
+    {% if user.is_authenticated and history_entries|length < 3 %}
     <div class="fab-button" onclick="openNewBriefModal()">
         <i class="fas fa-plus"></i>
     </div>
+    {% endif %}
     
     <!-- Modal for adding new briefs -->
     <div id="newBriefModal" class="modal">
         <div class="modal-content">
             <h2 class="modal-title">add new brief</h2>
-            <form method="post" action="/" id="modalSearchForm">
-                <input type="text" name="query" placeholder="add a topic" class="search-box" required>
-                <div class="search-options" style="display: none;">
-                    <select name="count" class="option-select">
-                        <option value="10">10 results</option>
-                        <option value="20">20 results</option>
-                        <option value="30">30 results</option>
-                        <option value="50" selected>50 results</option>
-                    </select>
-                    <select name="freshness" class="option-select">
-                        <option value="pd">past day</option>
-                        <option value="pw">past week</option>
-                        <option value="pm">past month</option>
-                        <option value="py" selected>past year</option>
-                    </select>
-                    <select name="similarity_threshold" class="option-select">
-                        <option value="0.2">low similarity</option>
-                        <option value="0.3">medium similarity</option>
-                        <option value="0.4" selected>high similarity</option>
-                    </select>
-                    <input type="hidden" name="force_refresh" value="false">
-                </div>
+            {% if user.is_authenticated %}
+                {% if history_entries|length >= 3 %}
+                    <p style="margin-bottom: 20px; color: #ff3b30;">You've reached the maximum of 3 briefs. Please remove one before adding another.</p>
+                    <div class="modal-buttons">
+                        <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">close</button>
+                    </div>
+                {% else %}
+                    <form method="post" action="/" id="modalSearchForm">
+                        <input type="text" name="query" placeholder="add a topic" class="search-box" required>
+                        <div class="search-options" style="display: none;">
+                            <select name="count" class="option-select">
+                                <option value="10">10 results</option>
+                                <option value="20">20 results</option>
+                                <option value="30">30 results</option>
+                                <option value="50" selected>50 results</option>
+                            </select>
+                            <select name="freshness" class="option-select">
+                                <option value="pd">past day</option>
+                                <option value="pw">past week</option>
+                                <option value="pm">past month</option>
+                                <option value="py" selected>past year</option>
+                            </select>
+                            <select name="similarity_threshold" class="option-select">
+                                <option value="0.2">low similarity</option>
+                                <option value="0.3">medium similarity</option>
+                                <option value="0.4" selected>high similarity</option>
+                            </select>
+                            <input type="hidden" name="force_refresh" value="false">
+                        </div>
+                        <div class="modal-buttons">
+                            <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">cancel</button>
+                            <button type="submit" class="modal-button submit-button">add brief</button>
+                        </div>
+                    </form>
+                {% endif %}
+            {% else %}
+                <p style="margin-bottom: 20px;">You need to <a href="{{ url_for('auth.login') }}" style="color: var(--accent-color);">login</a> to add briefs.</p>
                 <div class="modal-buttons">
-                    <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">cancel</button>
-                    <button type="submit" class="modal-button submit-button">add brief</button>
+                    <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">close</button>
+                    <a href="{{ url_for('auth.login') }}" class="modal-button submit-button" style="display: inline-block; text-align: center; text-decoration: none;">login</a>
                 </div>
-            </form>
+            {% endif %}
         </div>
     </div>
     
@@ -2012,7 +2119,7 @@ if __name__ == '__main__':
         }
 
         let reloadTimer;
-        let currentSeconds = 600; // 10 minutes default
+        let currentSeconds = 3600; // 60 minutes default
         let currentQuery = ""; // Store current query for timer management
         let timerIntervals = {}; // Store intervals for each query
         
@@ -2086,7 +2193,7 @@ if __name__ == '__main__':
             
             // Check if we have a stored cycle start time for this query
             let cycleStartTime = localStorage.getItem(cycleStartKey);
-            let currentSecs = 600;
+            let currentSecs = 3600;
             
             if (cycleStartTime) {
                 // We have an existing cycle - use it
@@ -2096,8 +2203,8 @@ if __name__ == '__main__':
                 // Calculate elapsed seconds since the start of this cycle
                 const elapsedSeconds = Math.floor((now - cycleStartTime) / 1000);
                 
-                // Calculate remaining seconds until next 10-minute mark (600 seconds)
-                currentSecs = Math.max(0, 600 - elapsedSeconds);
+                // Calculate remaining seconds until next 60-minute mark (3600 seconds)
+                currentSecs = Math.max(0, 3600 - elapsedSeconds);
             }
             
             // Update the element with the current time
@@ -2124,11 +2231,11 @@ if __name__ == '__main__':
                 // Calculate elapsed seconds since the start of this cycle
                 const elapsedSeconds = Math.floor((now - cycleStartTime) / 1000);
                 
-                // Calculate remaining seconds until next 10-minute mark (600 seconds)
+                // Calculate remaining seconds until next 60-minute mark (3600 seconds)
                 if (!window.timerSeconds) {
                     window.timerSeconds = {};
                 }
-                window.timerSeconds[query] = Math.max(0, 600 - elapsedSeconds);
+                window.timerSeconds[query] = Math.max(0, 3600 - elapsedSeconds);
                 
                 // If the timer is about to expire or has already expired, start a new cycle
                 if (window.timerSeconds[query] <= 5) {
@@ -2144,11 +2251,11 @@ if __name__ == '__main__':
         }
         
         function startNewCycle(query) {
-            // Start a fresh 10-minute cycle
+            // Start a fresh 60-minute cycle
             if (!window.timerSeconds) {
                 window.timerSeconds = {};
             }
-            window.timerSeconds[query] = 600;
+            window.timerSeconds[query] = 3600;
             
             // Record when this cycle started
             const now = new Date().getTime();
@@ -2159,7 +2266,7 @@ if __name__ == '__main__':
                 localStorage.setItem(`timerStart_${query}`, now.toString());
             }
             
-            console.log(`Starting new 10-minute refresh cycle for query: ${query}`);
+            console.log(`Starting new 60-minute refresh cycle for query: ${query}`);
         }
 
         function updateReloadTimer(query) {
@@ -2182,7 +2289,7 @@ if __name__ == '__main__':
                 // Update the cycle info every 10 seconds to avoid too much localStorage writing
                 if (window.timerSeconds[query] % 10 === 0) {
                     const now = new Date().getTime();
-                    const cycleStartTime = now - (600 - window.timerSeconds[query]) * 1000;
+                    const cycleStartTime = now - (3600 - window.timerSeconds[query]) * 1000;
                     localStorage.setItem(`cycleStart_${query}`, cycleStartTime.toString());
                 }
             }
