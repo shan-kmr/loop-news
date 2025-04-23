@@ -11,6 +11,13 @@ auth_bp = Blueprint('auth', __name__)
 # OAuth setup
 oauth = OAuth()
 
+"""
+When your application starts, you call init_oauth(app) to wire Authlib into Flask and register Google 
+as an OAuth provider. Under the hood, this tells Authlib where to find Google’s discovery document 
+and which client ID/secret to use. From then on, Authlib can generate the correct endpoints and handle 
+token exchanges without you writing low‑level HTTP code.
+"""
+
 def init_oauth(app):
     """Initialize OAuth with the app"""
     oauth.init_app(app)
@@ -26,6 +33,13 @@ def init_oauth(app):
         }
     )
 
+"""
+Hitting the /login route kicks off the user‑facing side of that flow. First, it asks Flask‑Login whether 
+someone’s already authenticated—if they are, it skips any extra steps and sends them back home. 
+If they’re not, it hands off to Authlib to build a redirect to Google’s consent screen, so the user can grant 
+your app access to their basic profile and email.
+"""
+
 @auth_bp.route('/login')
 def login():
     """Redirect to Google for authentication"""
@@ -39,6 +53,11 @@ def login():
         
     # Generate redirect URL to Google's OAuth page
     return oauth.google.authorize_redirect(redirect_uri)
+
+"""
+The callback route is where the magic happens. When the user returns from Google, the URL contains a code 
+and state parameter. The callback route uses that code to request an access token and user information.
+"""
 
 @auth_bp.route('/callback')
 def callback():
@@ -66,6 +85,10 @@ def callback():
     
     return 'Authentication failed', 401
 
+
+"""
+The logout route is straightforward. It uses Flask‑Login’s logout_user() function to log out the current user.
+"""
 @auth_bp.route('/logout')
 def logout():
     """Log out the user"""
