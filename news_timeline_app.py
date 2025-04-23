@@ -2272,61 +2272,68 @@ if __name__ == '__main__':
                     <div class="philosophy-section">
                         <h2>why i built this</h2>
                         <p>
-                            my vision for a sharper informational edge. as a product innovator with a background spanning
-                            global business and tech, i found myself constantly overwhelmed by the noise-to-signal ratio in daily news.
+                            my vision for a sharper informational edge. in an era where information abundance creates 
+                            its own form of scarcity—attention—the need for systems that respect cognitive degrees of freedom
+                            has never been more critical.
                         </p>
                         <p>
-                            i wanted what heads of state have: distilled intelligence that cuts through the noise. 
-                            facts separated from opinion, context automatically gathered, and implications clearly drawn.
+                            as an observer of global systems, i sought what remains orthogonal to the commercial incentives
+                            of modern media: genuine insight, separated from the constant barrage of reactionary content.
                         </p>
                     </div>
                     
                     <div class="philosophy-section">
                         <h2>beyond the feed</h2>
                         <p>
-                            traditional news fails modern thinkers. scrolling feeds create the illusion of being informed
-                            while actually fragmenting understanding. news is delivered without context, without synthesis, without meaning.
+                            traditional news suffers from a fundamental reductionism—breaking complex narratives into
+                            disconnected fragments that destroy context and coherence. the scrolling feed, by design, 
+                            optimizes for engagement metrics orthogonal to understanding.
                         </p>
                         <p>
-                            i built loop to solve this: a system that tracks developing stories over time, connects related events,
-                            and presents the complete arc of what matters—not just what happened today.
+                            loop challenges this paradigm by restoring the connections, presenting not isolated data points
+                            but complete trajectories—a temporal maps of events and their relationships across multiple
+                            dimensions of relevance.
                         </p>
                     </div>
                     
                     <div class="philosophy-section">
                         <h2>intelligence as a service</h2>
                         <p>
-                            as someone who's built products at the intersection of technology and human needs, 
-                            i realized AI could finally democratize what was once exclusive to intelligence agencies and corporate risk teams.
+                            the information landscape now operates with its own mens rea—a system designed to capture attention
+                            without the ethical framework to ensure integrity. it's a subtle crime of modern media: presenting
+                            partial truths as complete pictures. 
                         </p>
                         <p>
-                            loop is my answer to information overwhelm: a personal intelligence system that combines 
-                            automated news gathering with analytical synthesis—delivering understanding, not just information.
+                            loop serves as a corrective measure, applying computational rigor to restore the missing context.
+                            it establishes a framework where information can exist beyond the constraints of commercial imperatives
+                            and algorithmic biases.
                         </p>
                     </div>
                     
                     <div class="philosophy-section">
                         <h2>first principles approach</h2>
                         <p>
-                            most AI news products simply summarize existing content. loop goes deeper. it clusters related articles, 
-                            identifies inconsistencies between sources, spots information gaps, and actively researches to fill them.
+                            where conventional AI systems accept surface-level reductionism of news into summaries,
+                            loop interrogates information along orthogonal dimensions: veracity, source credibility,
+                            contextual relevance, and historical continuity.
                         </p>
                         <p>
-                            the result is a brief that doesn't just compress information—it enhances it with context and insight
-                            that would take hours of manual research to compile.
+                            this approach expands the degrees of freedom through which information can be processed and understood—
+                            moving beyond what is merely said to what it means within larger systems of knowledge and events.
                         </p>
                     </div>
                     
                     <div class="philosophy-section">
                         <h2>personal mission</h2>
                         <p>
-                            i believe deeply that better information leads to better decisions. working across cultures and industries
-                            has shown me how critical it is to cut through noise and see patterns clearly.
+                            having worked across cultural and disciplinary boundaries, i've observed how information asymmetries
+                            create power imbalances that limit collective progress. loop represents my attempt to establish
+                            an intelligence commons—an equalization of informational power.
                         </p>
                         <p>
-                            loop is built to be what i needed but couldn't find: a thinking partner for navigating complexity,
-                            a tool for seeing beyond headlines, and a system that respects the finite nature of attention
-                            in an infinite sea of content.
+                            it exists as a counterpoint to the mental mens rea of modern media ecosystems, 
+                            a space where the complete picture is valued above the fragmentary, and where deep understanding
+                            remains the non-negotiable standard for what constitutes actual news.
                         </p>
                     </div>
                 </div>
