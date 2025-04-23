@@ -6,7 +6,7 @@ A Flask-based web app that provides a UI for searching news articles and
 displaying them in a timeline view, sorted by recency.
 """
 
-from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash
+from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash, render_template_string
 from flask_login import LoginManager, login_required, current_user
 import os
 import re
@@ -1217,6 +1217,26 @@ def request_access_redirect():
     # GET requests just redirect back to the homepage
     return redirect(url_for('index'))
 
+@app.route('/raison-detre', methods=['GET'])
+def raison_detre():
+    """Display the raison d'être page"""
+    # Get history entries for sidebar if needed
+    history_entries = []
+    if current_user.is_authenticated:
+        history = load_search_history()
+        for key, entry in history.items():
+            history_entries.append(entry)
+        # Sort by timestamp descending
+        history_entries.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+    
+    return render_template_string(
+        get_base_template(),
+        active_tab='raison-detre',
+        user=current_user,
+        history_entries=history_entries,
+        history=load_search_history()
+    )
+
 if __name__ == '__main__':
     # Initialize models in background threads to avoid blocking app startup
     if LLAMA_AVAILABLE or OPENAI_AVAILABLE:
@@ -1902,21 +1922,20 @@ if __name__ == '__main__':
             width: 20px;
             height: 20px;
             border: 2px solid rgba(0, 0, 0, 0.1);
-            border-top-color: var(--accent-color);
             border-radius: 50%;
+            border-top: 2px solid var(--accent-color);
             animation: spin 1s linear infinite;
             margin-left: 10px;
         }
         
         [data-theme="dark"] .loading-spinner {
             border: 2px solid rgba(255, 255, 255, 0.1);
-            border-top-color: #ffffff;
+            border-top: 2px solid var(--accent-color);
         }
         
         @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
         
         .submit-button-container {
@@ -1997,6 +2016,41 @@ if __name__ == '__main__':
             margin-bottom: 20px;
             opacity: 0.8;
         }
+        
+        .philosophy-page {
+            padding: 30px;
+        }
+        
+        .philosophy-page .section-title {
+            font-size: 32px;
+            font-weight: 300;
+            margin-bottom: 30px;
+            color: var(--text-color);
+        }
+        
+        .philosophy-section {
+            margin-bottom: 40px;
+        }
+        
+        .philosophy-section h2 {
+            font-size: 24px;
+            font-weight: 400;
+            margin-bottom: 15px;
+            color: var(--text-color);
+        }
+        
+        .philosophy-section p {
+            font-size: 16px;
+            line-height: 1.7;
+            margin-bottom: 15px;
+            max-width: 700px;
+            color: var(--text-color);
+            opacity: 0.9;
+        }
+        
+        [data-theme="dark"] .philosophy-section p {
+            opacity: 0.85;
+        }
     </style>
 </head>
 <body>
@@ -2005,6 +2059,7 @@ if __name__ == '__main__':
         <nav>
             <a href="/" class="{% if active_tab == 'search' %}active{% endif %}">home</a>
             <a href="/history" class="{% if active_tab == 'history' %}active{% endif %}">briefs</a>
+            <a href="/raison-detre" class="{% if active_tab == 'raison-detre' %}active{% endif %}">raison d'être</a>
         </nav>
         <div class="user-info">
             {% if user.is_authenticated %}
@@ -2208,6 +2263,71 @@ if __name__ == '__main__':
                         </button>
                     </div>
                 {% endif %}
+            {% elif active_tab == 'raison-detre' %}
+                <div class="brief-card expanded philosophy-page">
+                    <h1 class="section-title">raison d'être</h1>
+                    
+                    <div class="philosophy-section">
+                        <h2>why i built this</h2>
+                        <p>
+                            my vision for a sharper informational edge. as a product innovator with a background spanning
+                            global business and tech, i found myself constantly overwhelmed by the noise-to-signal ratio in daily news.
+                        </p>
+                        <p>
+                            i wanted what heads of state have: distilled intelligence that cuts through the noise. 
+                            facts separated from opinion, context automatically gathered, and implications clearly drawn.
+                        </p>
+                    </div>
+                    
+                    <div class="philosophy-section">
+                        <h2>beyond the feed</h2>
+                        <p>
+                            traditional news fails modern thinkers. scrolling feeds create the illusion of being informed
+                            while actually fragmenting understanding. news is delivered without context, without synthesis, without meaning.
+                        </p>
+                        <p>
+                            i built loop to solve this: a system that tracks developing stories over time, connects related events,
+                            and presents the complete arc of what matters—not just what happened today.
+                        </p>
+                    </div>
+                    
+                    <div class="philosophy-section">
+                        <h2>intelligence as a service</h2>
+                        <p>
+                            as someone who's built products at the intersection of technology and human needs, 
+                            i realized AI could finally democratize what was once exclusive to intelligence agencies and corporate risk teams.
+                        </p>
+                        <p>
+                            loop is my answer to information overwhelm: a personal intelligence system that combines 
+                            automated news gathering with analytical synthesis—delivering understanding, not just information.
+                        </p>
+                    </div>
+                    
+                    <div class="philosophy-section">
+                        <h2>first principles approach</h2>
+                        <p>
+                            most AI news products simply summarize existing content. loop goes deeper. it clusters related articles, 
+                            identifies inconsistencies between sources, spots information gaps, and actively researches to fill them.
+                        </p>
+                        <p>
+                            the result is a brief that doesn't just compress information—it enhances it with context and insight
+                            that would take hours of manual research to compile.
+                        </p>
+                    </div>
+                    
+                    <div class="philosophy-section">
+                        <h2>personal mission</h2>
+                        <p>
+                            i believe deeply that better information leads to better decisions. working across cultures and industries
+                            has shown me how critical it is to cut through noise and see patterns clearly.
+                        </p>
+                        <p>
+                            loop is built to be what i needed but couldn't find: a thinking partner for navigating complexity,
+                            a tool for seeing beyond headlines, and a system that respects the finite nature of attention
+                            in an infinite sea of content.
+                        </p>
+                    </div>
+                </div>
             {% endif %}
         </main>
     </div>
