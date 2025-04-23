@@ -1190,7 +1190,7 @@ def format_datetime_filter(value, format='%Y-%m-%d %H:%M'):
 
 # Make the is_valid_summary function available in templates
 app.jinja_env.globals['is_valid_summary'] = is_valid_summary
-app.jinja_env.globals['get_flashed_messages'] = flash._get_flashed_messages
+# Flask automatically makes get_flashed_messages available in templates, no need to add it manually
 
 @app.route('/request-access', methods=['GET', 'POST'])
 def request_access_redirect():
