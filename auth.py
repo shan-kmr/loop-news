@@ -93,10 +93,10 @@ def callback():
         if user_info and 'email' in user_info:
             # Check if the email is allowed
             if not is_email_allowed(user_info['email']):
-                # Email not in whitelist - redirect to access request page
+                # Email not in whitelist - store in session for the request form
                 session['pending_email'] = user_info['email']
                 flash('Your email is not on the allowed list. Please request access.', 'error')
-                return redirect(url_for('auth.request_access'))
+                return redirect(url_for('index'))
             
             # Create or update user
             user = User(
@@ -120,32 +120,6 @@ def callback():
         print(f"Authentication error: {str(e)}")
         flash('Authentication error. Please try again later.', 'error')
         return redirect(url_for('index'))
-
-@auth_bp.route('/request-access', methods=['GET', 'POST'])
-def request_access():
-    """Handle access requests"""
-    if request.method == 'POST':
-        email = request.form.get('email', '').strip()
-        
-        # Validate email format (very basic validation)
-        if not email or '@' not in email:
-            flash('Please enter a valid email address.', 'error')
-            return render_template('request_access.html')
-        
-        # Add email to waitlist
-        success = add_email_to_waitlist(email)
-        
-        if success:
-            flash('Your access request has been submitted. You will be notified when access is granted.', 'success')
-            return redirect(url_for('index'))
-        else:
-            flash('Your email is already in our waitlist. Please wait for approval.', 'info')
-            return redirect(url_for('index'))
-    
-    # GET request - show the form
-    # If we have a pending email from OAuth callback, pre-fill it
-    pending_email = session.pop('pending_email', '')
-    return render_template('request_access.html', email=pending_email)
 
 @auth_bp.route('/logout')
 def logout():
