@@ -2717,21 +2717,8 @@ if __name__ == '__main__':
                 // Clear the cycle info before reloading - the timerStart stays to track when the original search happened
                 localStorage.removeItem(`cycleStart_${query}`);
                 
-                // Only reload the page if we're on the history page for this query
-                // or if it's the current query being displayed
-                if (window.location.pathname.includes(`/history/${query}`)) {
-                    location.reload();
-                } else if (window.location.pathname === '/' || window.location.pathname === '') {
-                    // When timer expires on home page, force refresh the entire page to get updated content
-                    const url = new URL(window.location.href);
-                    url.searchParams.set('force_refresh', 'true');
-                    window.location.href = url.toString();
-                } else {
-                    // For other pages, just restart the cycle without reload
-                    startNewCycle(query);
-                    // Re-create the interval
-                    timerIntervals[query] = setInterval(() => updateReloadTimer(query), 1000);
-                }
+                // Use the same forceRefresh function for consistency
+                forceRefresh(query);
             }
         }
 
@@ -2746,8 +2733,16 @@ if __name__ == '__main__':
                 if (window.location.pathname === '/' || window.location.pathname === '') {
                     url.searchParams.set('query', query);
                 }
+                
+                // If we're on the detail page for this query, force refresh it
+                if (window.location.pathname.includes(`/history/${query}`)) {
+                    // Just reload the page with force_refresh=true
+                    window.location.href = url.toString();
+                    return;
+                }
             }
             
+            // Always do a full page reload
             window.location.href = url.toString();
         }
     </script>
