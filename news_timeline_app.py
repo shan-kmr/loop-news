@@ -1448,7 +1448,8 @@ def user_loader_with_tracking(user_id):
     if user:
         # Update the user's activity log
         if session.get('logged_in_tracked') != user_id:
-            activity_logger.log_login(user.id, user.email, user.name, True)
+            # The user_id is what we need to pass, not user.id
+            activity_logger.log_login(user_id, getattr(user, 'email', ''), getattr(user, 'name', ''), True)
             session['logged_in_tracked'] = user_id
     return user
 
