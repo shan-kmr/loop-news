@@ -2556,7 +2556,7 @@ if __name__ == '__main__':
             const cancelButton = document.querySelector('.cancel-button');
             
             if (searchForm) {
-                searchForm.addEventListener('submit', function() {
+                searchForm.addEventListener('submit', function(e) {
                     // Show spinner
                     loadingSpinner.style.display = 'block';
                     
@@ -2567,6 +2567,12 @@ if __name__ == '__main__':
                     
                     cancelButton.disabled = true;
                     cancelButton.style.opacity = '0.7';
+                    
+                    // Add a console log to verify this code is running
+                    console.log('Form submitted, showing spinner and disabling buttons');
+                    
+                    // Let the form submission proceed
+                    return true;
                 });
             }
             
