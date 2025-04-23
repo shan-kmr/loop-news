@@ -1813,6 +1813,33 @@ if __name__ == '__main__':
             margin-left: 10px;
             font-style: italic;
         }
+        
+        .loading-spinner {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(0, 0, 0, 0.1);
+            border-top-color: var(--accent-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        
+        [data-theme="dark"] .loading-spinner {
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #ffffff;
+        }
+        
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+        
+        .submit-button-container {
+            display: flex;
+            align-items: center;
+        }
     </style>
 </head>
 <body>
@@ -2053,7 +2080,10 @@ if __name__ == '__main__':
                         </div>
                         <div class="modal-buttons">
                             <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">cancel</button>
-                            <button type="submit" class="modal-button submit-button">add brief</button>
+                            <div class="submit-button-container">
+                                <button type="submit" class="modal-button submit-button" id="submitBriefButton">add brief</button>
+                                <div class="loading-spinner" id="briefLoadingSpinner"></div>
+                            </div>
                         </div>
                     </form>
                 {% endif %}
@@ -2134,6 +2164,31 @@ if __name__ == '__main__':
                 }
             }
             
+            // Dark mode toggle functionality
+            const themeToggle = document.getElementById('theme-toggle');
+            const themeIcon = themeToggle.querySelector('i');
+            
+            // Check for saved theme preference or use device preference
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                themeIcon.className = 'fas fa-sun';
+            }
+            
+            // Toggle theme when button is clicked
+            themeToggle.addEventListener('click', function() {
+                const currentTheme = document.documentElement.getAttribute('data-theme');
+                if (currentTheme === 'dark') {
+                    document.documentElement.removeAttribute('data-theme');
+                    localStorage.setItem('theme', 'light');
+                    themeIcon.className = 'fas fa-moon';
+                } else {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                    localStorage.setItem('theme', 'dark');
+                    themeIcon.className = 'fas fa-sun';
+                }
+            });
+            
             // Initialize all timers on page
             const timerElements = document.getElementsByClassName('reload-timer');
             if (timerElements.length > 0) {
@@ -2161,30 +2216,26 @@ if __name__ == '__main__':
                 }
             }
             
-            // Dark mode toggle functionality
-            const themeToggle = document.getElementById('theme-toggle');
-            const themeIcon = themeToggle.querySelector('i');
+            // Show loading spinner when form is submitted
+            const searchForm = document.getElementById('modalSearchForm');
+            const submitButton = document.getElementById('submitBriefButton');
+            const loadingSpinner = document.getElementById('briefLoadingSpinner');
+            const cancelButton = document.querySelector('.cancel-button');
             
-            // Check for saved theme preference or use device preference
-            const savedTheme = localStorage.getItem('theme');
-            if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-                document.documentElement.setAttribute('data-theme', 'dark');
-                themeIcon.className = 'fas fa-sun';
+            if (searchForm) {
+                searchForm.addEventListener('submit', function() {
+                    // Show spinner
+                    loadingSpinner.style.display = 'block';
+                    
+                    // Disable buttons
+                    submitButton.disabled = true;
+                    submitButton.style.opacity = '0.7';
+                    submitButton.textContent = 'adding...';
+                    
+                    cancelButton.disabled = true;
+                    cancelButton.style.opacity = '0.7';
+                });
             }
-            
-            // Toggle theme when button is clicked
-            themeToggle.addEventListener('click', function() {
-                const currentTheme = document.documentElement.getAttribute('data-theme');
-                if (currentTheme === 'dark') {
-                    document.documentElement.removeAttribute('data-theme');
-                    localStorage.setItem('theme', 'light');
-                    themeIcon.className = 'fas fa-moon';
-                } else {
-                    document.documentElement.setAttribute('data-theme', 'dark');
-                    localStorage.setItem('theme', 'dark');
-                    themeIcon.className = 'fas fa-sun';
-                }
-            });
         });
         
         function initTimerForElement(element, query) {
@@ -2434,4 +2485,4 @@ if __name__ == '__main__':
     print("NOTE: Set the following environment variables for Google authentication:")
     print("export GOOGLE_CLIENT_ID=your_google_client_id")
     print("export GOOGLE_CLIENT_SECRET=your_google_client_secret")
-    app.run(host='0.0.0.0', port=5000, debug=True) 
+    app.run(host='127.0.0.1', port=5000, debug=True) 
