@@ -2266,9 +2266,26 @@ if __name__ == '__main__':
                 <div class="modal-buttons">
                     <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">close</button>
                     <a href="{{ url_for('auth.login') }}" class="modal-button submit-button" style="display: inline-block; text-align: center; text-decoration: none; margin-right: 10px;">login</a>
-                    <a href="{{ url_for('request_access_redirect') }}" class="modal-button submit-button" style="display: inline-block; text-align: center; text-decoration: none;">request access</a>
+                    <a href="#" onclick="openRequestAccessModal(); closeNewBriefModal(); return false;" class="modal-button submit-button" style="display: inline-block; text-align: center; text-decoration: none;">request access</a>
                 </div>
             {% endif %}
+        </div>
+    </div>
+    
+    <!-- Modal for requesting access -->
+    <div id="requestAccessModal" class="modal">
+        <div class="modal-content">
+            <h2 class="modal-title">request access</h2>
+            <form method="post" action="{{ url_for('request_access_redirect') }}" id="requestAccessForm">
+                <input type="email" name="email" placeholder="your email address" class="search-box" required>
+                <div class="modal-buttons">
+                    <button type="button" class="modal-button cancel-button" onclick="closeRequestAccessModal()">cancel</button>
+                    <div class="submit-button-container">
+                        <button type="submit" class="modal-button submit-button" id="submitAccessButton">submit request</button>
+                        <div class="loading-spinner" id="accessLoadingSpinner"></div>
+                    </div>
+                </div>
+            </form>
         </div>
     </div>
     
@@ -2321,6 +2338,14 @@ if __name__ == '__main__':
         
         function closeNewBriefModal() {
             document.getElementById('newBriefModal').style.display = 'none';
+        }
+        
+        function openRequestAccessModal() {
+            document.getElementById('requestAccessModal').style.display = 'flex';
+        }
+        
+        function closeRequestAccessModal() {
+            document.getElementById('requestAccessModal').style.display = 'none';
         }
 
         let reloadTimer;
@@ -2385,9 +2410,13 @@ if __name__ == '__main__':
             
             // Close modal if clicked outside
             window.onclick = function(event) {
-                const modal = document.getElementById('newBriefModal');
-                if (event.target == modal) {
+                const briefModal = document.getElementById('newBriefModal');
+                const accessModal = document.getElementById('requestAccessModal');
+                if (event.target == briefModal) {
                     closeNewBriefModal();
+                }
+                if (event.target == accessModal) {
+                    closeRequestAccessModal();
                 }
             }
             
@@ -2409,6 +2438,27 @@ if __name__ == '__main__':
                     
                     cancelButton.disabled = true;
                     cancelButton.style.opacity = '0.7';
+                });
+            }
+            
+            // Show loading spinner when access request form is submitted
+            const accessForm = document.getElementById('requestAccessForm');
+            const accessButton = document.getElementById('submitAccessButton');
+            const accessSpinner = document.getElementById('accessLoadingSpinner');
+            
+            if (accessForm) {
+                accessForm.addEventListener('submit', function() {
+                    // Show spinner
+                    accessSpinner.style.display = 'block';
+                    
+                    // Disable buttons
+                    accessButton.disabled = true;
+                    accessButton.style.opacity = '0.7';
+                    accessButton.textContent = 'submitting...';
+                    
+                    const accessCancelButton = accessForm.querySelector('.cancel-button');
+                    accessCancelButton.disabled = true;
+                    accessCancelButton.style.opacity = '0.7';
                 });
             }
         });
