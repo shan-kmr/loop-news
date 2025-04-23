@@ -1812,6 +1812,8 @@ if __name__ == '__main__':
             opacity: 0.7;
             margin-left: 10px;
             font-style: italic;
+            padding-right: 5px;
+            white-space: nowrap;
         }
         
         .loading-spinner {

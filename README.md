@@ -1,20 +1,21 @@
-# News Timeline
+# Loop: Track All Moves in a Single Timeline
 
 A web application that provides a timeline view of news articles, with smart topic grouping and AI-powered summaries.
 
-![News Timeline Screenshot](https://via.placeholder.com/800x450.png?text=News+Timeline+Screenshot)
+![Loop Timeline Screenshot](https://via.placeholder.com/800x450.png?text=Loop+Timeline+Screenshot)
 
 ## Overview
 
-News Timeline is a Flask-based web application that allows you to search for news articles and view them in a chronological timeline, organized by day and topic. The application features:
+Loop (formerly News Timeline) is a Flask-based web application that allows you to track topics through a chronological timeline, organized by day and topic. The application features:
 
 - Timeline view of news articles sorted by recency
-- Topic-based grouping of related articles
+- Topic-based grouping of related articles with expandable/collapsible sections
 - AI-powered daily summaries using OpenAI GPT-4.1 Nano (with Llama 3.2 as an optional alternative)
-- History tab to view past searches
-- Intelligent caching to reduce API calls and load times
+- User account system with 3-brief limit per user
+- Light and dark mode with automatic theme detection
+- Intelligent caching with 60-minute auto-refresh
 - Google authentication for personalized user experience
-- Automatic background refresh of outdated search results
+- Clean, minimalist UI optimized for quick information consumption
 
 ## Installation
 
@@ -30,8 +31,8 @@ News Timeline is a Flask-based web application that allows you to search for new
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/news-timeline.git
-cd news-timeline
+git clone https://github.com/yourusername/loop-timeline.git
+cd loop-timeline
 ```
 
 2. Install dependencies:
@@ -77,29 +78,81 @@ Access the web interface at http://localhost:5000.
 
 ## Features in Detail
 
-### Search Options
+### User Authentication & Brief Limits
 
-| Option | Description | Technical Implementation |
-|--------|-------------|--------------------------|
-| **Search Query** | Keywords to search for in news articles | Directly passed to Brave News API's `query` parameter |
-| **Number of Results** | Maximum number of articles to fetch (10, 20, 30, 50) | Controls the `count` parameter in API calls |
-| **Time Period** | Time range for articles (Past Day, Week, Month, Year) | Maps to Brave API's `freshness` parameter: pd (day), pw (week), pm (month), py (year) |
-| **Topic Similarity** | Controls how articles are grouped | Adjusts the cosine similarity threshold: Low (0.2), Medium (0.3), High (0.4) |
+Loop requires user authentication for adding briefs:
 
-### Topic Grouping System
+1. **Login Requirement**: 
+   - Users must login with Google to add briefs
+   - Guest mode allows viewing but not adding briefs
 
-Articles are grouped based on content similarity using TF-IDF vectorization and cosine similarity:
+2. **Brief Limit System**:
+   - Each user is limited to 3 briefs maximum
+   - A counter displays current usage (e.g., "2 out of 3 briefs used")
+   - Users must delete an existing brief before adding a new one when at the limit
+   - Delete buttons are available on each brief card for easy management
 
-1. Each article's title and description are cleaned and vectorized
-2. A cosine similarity matrix is calculated between all articles
-3. Articles with similarity above the threshold are grouped together
-4. Each group forms a "topic" with the newest article's title as the topic title
-5. Topics are displayed with expandable/collapsible sections
+3. **Personalized Experience**:
+   - User-specific search history that persists across devices
+   - User name and profile picture display
+   - Ability to delete individual briefs or clear all history
 
-The similarity threshold controls how aggressively articles are grouped:
-- **Low (0.2)**: More groups with fewer articles per group
-- **Medium (0.3)**: Balanced grouping
-- **High (0.4)**: Fewer groups with more articles per group
+### Topic Tracking
+
+Add topics to track by:
+
+1. Clicking the "+" floating action button (when under the 3-brief limit)
+2. Entering a topic in the "add a topic" modal
+3. Viewing your brief on the home page with automatic summaries
+
+Each brief shows:
+- The topic title
+- Auto-refresh countdown timer (60-minute cycles)
+- "Today" summary with live indicator dot
+- "Detailed analysis" link to the full timeline view
+
+### Timeline View
+
+When viewing a specific topic, you'll see:
+
+1. **Chronological Organization**:
+   - Articles grouped by day (Today, Yesterday, 2 days ago, etc.)
+   - Daily AI-generated summaries at the top of each day section
+
+2. **Topic Grouping**:
+   - Related articles clustered by content similarity
+   - Expandable/collapsible sections with rotation animation
+   - Topic count showing number of articles in each group
+   - Brief 1-liner summary of each article
+   - Source information and full article links
+
+3. **Visual Indicators**:
+   - Live red dot next to "Today" to indicate fresh content
+   - Auto-refresh countdown showing when new data will be loaded
+   - Subtle animations for user interactions
+
+### UI Features
+
+Loop features a modern, clean UI with:
+
+1. **Dual Theme Support**:
+   - Light mode (default)
+   - Dark mode with properly contrasted text and no shadows
+   - Moon/Sun toggle in top navbar
+   - Automatic theme detection based on system preferences
+   - Theme persistence between sessions
+
+2. **Responsive Design**:
+   - Works on desktop and mobile devices
+   - Adapts to different screen sizes
+   - Optimized typography for readability
+
+3. **Interactive Elements**:
+   - Loading indicators during brief creation
+   - Animated arrows for expandable content
+   - Subtle hover effects
+   - Delete buttons for brief management
+   - Auto-refresh timer for each brief
 
 ### AI-Powered Summaries
 
@@ -134,49 +187,43 @@ To switch between models, modify the `MODEL_PROVIDER` variable in the code:
 MODEL_PROVIDER = "openai"  # Change to "llama" to use Llama model
 ```
 
-These summaries appear at the top of each day's section, providing a quick overview.
+### Topic Grouping System
 
-### User Authentication with Google
+Articles are grouped based on content similarity using TF-IDF vectorization and cosine similarity:
 
-The application features Google OAuth integration for user authentication:
+1. Each article's title and description are cleaned and vectorized
+2. A cosine similarity matrix is calculated between all articles
+3. Articles with similarity above the threshold are grouped together
+4. Each group forms a "topic" with the newest article's title as the topic title
+5. Topics are displayed with expandable/collapsible sections
 
-1. Users can sign in with their Google account by clicking the "Login with Google" button
-2. Authentication provides:
-   - Personalized experience with user name and profile picture display
-   - User-specific search history that persists across devices
-   - Ability to delete individual search items or clear all history
+The similarity threshold controls how aggressively articles are grouped:
+- **Low (0.2)**: More groups with fewer articles per group
+- **Medium (0.3)**: Balanced grouping
+- **High (0.4)**: Fewer groups with more articles per group
 
-When signed in:
-- Search history is stored in user-specific files
-- History management options become available
-- Profile information from Google is displayed in the sidebar
+### Automatic Refresh System
 
-### Automatic Background Refresh
+Loop includes a 60-minute auto-refresh cycle:
 
-The application includes an intelligent background refresh mechanism:
+1. **Refresh Timer**:
+   - Each brief displays a countdown timer showing minutes:seconds until refresh
+   - Default refresh cycle is 60 minutes (up from previous 10 minutes)
+   - Timer persists between page visits using localStorage
 
-1. **Staleness Detection**:
-   - When viewing search results older than 10 minutes, a refresh is automatically triggered
-   - This occurs both in the main search page and when viewing history items
+2. **Staleness Detection**:
+   - When viewing search results older than 60 minutes, a refresh is automatically triggered
+   - Background refresh occurs both on the home page and detailed views
 
-2. **Adaptive Time Window**:
-   - The system determines an appropriate refresh window based on the original search parameters
-   - Short time periods (past day) are upgraded to "past week" for better coverage
-   - Longer periods (past month, past year) are maintained
-
-3. **Gap Filling**:
-   - If a search is more than a day old, the system intelligently fills in the gap with new articles
-   - Articles from the refresh window are updated with fresh results
-   - Articles older than the refresh window are preserved
-   - Duplicates are eliminated by URL comparison
+3. **Adaptive Time Window**:
+   - The system determines an appropriate refresh window based on original search parameters
+   - Short time periods (past day) are used for 60-minute refreshes
+   - Longer periods (past week, month, year) are maintained for less frequent refreshes
 
 4. **Seamless Updates**:
-   - Users don't need to manually refresh old searches
-   - The timeline automatically includes the latest articles
-   - The cache is updated with refreshed content
+   - Timeline automatically includes latest articles without manual intervention
+   - Cache updates with refreshed content
    - Original timestamps are preserved for articles outside the refresh window
-
-This ensures you always see the most current information without missing developments that occurred between searches.
 
 ### Caching Mechanism
 
@@ -185,7 +232,7 @@ The application uses multi-level caching to improve performance:
 1. **Search Results Caching**:
    - Search results are cached with a key of `{query}_{count}_{freshness}`
    - Default cache validity is 1 hour
-   - Stored in a local JSON file (`search_history.json` for anonymous users or user-specific files for logged-in users)
+   - Stored in a local JSON file (user-specific for logged-in users)
 
 2. **Model Caching**:
    - Llama model files are cached in a local directory (`llama_model_cache`)
@@ -195,118 +242,42 @@ The application uses multi-level caching to improve performance:
    - Daily summaries are cached alongside search results
    - If a summary exists in cache, it's reused instead of regenerating
 
-Users can force a refresh of search results with the "Refresh Results" button.
+Users can force a refresh of search results with the "Refresh" button in the detailed view.
 
-## Code Flow
+## Technical Details
 
-Here's how the application works behind the scenes:
+### Code Structure
 
-### Initial Page Load
+The application is built around a single Flask app with the following components:
 
-1. Flask loads the main route (`/`)
-2. Model initialization starts in a background thread (OpenAI client or Llama model)
-3. If Brave API key is missing, an error is shown
-4. Default query is set to "breaking news"
-5. User authentication status is checked
-6. Search history is loaded from the appropriate file based on login status
-7. Templates are rendered with empty results
+- **Authentication**: Google OAuth integration via `flask-login`
+- **API Integration**: Brave News API client for search functionality
+- **NLP Processing**: scikit-learn for TF-IDF vectorization and topic grouping
+- **AI Integration**: OpenAI API and Hugging Face transformers for summaries
+- **Frontend**: Pure HTML/CSS/JS without external frameworks
+- **Data Storage**: JSON files for user data and history
 
-### Authentication Flow
+### Deployment Considerations
 
-1. User clicks "Login with Google"
-2. Browser redirects to Google's OAuth consent screen
-3. User grants permissions
-4. Google redirects back to `/auth/callback` with authorization code
-5. Application exchanges code for access token
-6. User information is retrieved and stored in the session
-7. User is redirected to the main page with personalized experience
+For production deployment:
 
-### Search Execution
-
-1. User submits a search form (POST request)
-2. Application checks for cached results with the same parameters
-3. If valid cache exists:
-   - Age of the cached results is checked
-   - If older than 10 minutes, a background refresh is triggered
-   - Cached results and summaries are loaded
-   - Articles are sorted by age
-   - Topic grouping is applied using cached summaries
-4. If no valid cache or "Refresh" is clicked:
-   - Brave News API is called with the search parameters
-   - Results are sorted by age
-   - Topic grouping is applied
-   - Summaries are generated for each day using the configured AI model
-   - Results and summaries are cached
-
-### Background Refresh Process
-
-1. Age of cached results is checked
-2. If older than 10 minutes:
-   - Appropriate freshness parameter is determined based on original search
-   - New API call is made with adjusted parameters
-   - Results are categorized as "within refresh window" or "beyond refresh window"
-   - Articles beyond the refresh window are preserved
-   - Articles within the window are replaced with fresh content
-   - Duplicates are eliminated by URL comparison
-   - Updated results replace the old cache entry
-
-### Topic Grouping Process
-
-1. Article contents (title + description) are cleaned and vectorized using TF-IDF
-2. Cosine similarity is calculated between all article pairs
-3. Articles with similarity above threshold are grouped
-4. Groups are sorted by the age of their newest article
-5. Each day's articles are collected
-6. For each day without a cached summary:
-   - Articles for that day are compiled
-   - The configured AI model generates a summary
-   - Summary is stored in the cache
-7. Topic groups are returned with their associated day summaries
-
-### History Tab
-
-1. User clicks "History" tab
-2. App lists all past searches in the sidebar
-3. When a history item is selected:
-   - Cached search results are retrieved
-   - If results are older than 10 minutes, a background refresh is triggered
-   - Articles are sorted and grouped
-   - If summaries don't exist in cache, they're generated and saved back
-   - Results are displayed with the same UI as search results
-
-## Directory Structure
-
-```
-news-timeline/
-├── news_timeline_app.py    # Main application file
-├── brave_news_api.py       # API client for Brave News
-├── auth.py                 # Authentication handling
-├── models.py               # User model and data storage
-├── config.py               # Application configuration
-├── requirements.txt        # Python dependencies
-├── search_history.json     # Cache file for anonymous users
-├── user_data/              # Directory for user-specific files
-├── llama_model_cache/      # Directory for cached model files
-└── templates/              # Auto-generated HTML templates
-```
-
-## Requirements
-
-See `requirements.txt` for the full list of dependencies. Key requirements:
-
-- flask
-- flask-login
-- authlib
-- scikit-learn
-- transformers (for Llama model)
-- torch (for Llama model)
-- huggingface_hub (for Llama model)
-- openai (for GPT-4.1 Nano)
+1. Set `debug=False` in app.run() call
+2. Set up proper WSGI server (e.g., Gunicorn)
+3. Configure proper authentication with HTTPS
+4. Implement rate limiting for API calls
+5. Use a database instead of JSON files for user data
+6. Set appropriate cache durations based on expected usage
+7. Consider using a CDN for static assets
+8. Implement proper logging and monitoring
+9. Add error tracking
 
 ## License
 
-MIT License
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Contributing
+## Acknowledgments
 
-Contributions are welcome! Please feel free to submit a Pull Request. 
+- [Brave Search API](https://brave.com/search/api/) for news search functionality
+- [OpenAI API](https://platform.openai.com/) for AI-powered summaries
+- [Meta AI](https://ai.meta.com/) for Llama model alternative
+- [Google OAuth](https://developers.google.com/identity/protocols/oauth2) for authentication 
