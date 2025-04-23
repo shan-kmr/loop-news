@@ -1,8 +1,9 @@
-from flask import Blueprint, request, redirect, url_for, session, current_app
+from flask import Blueprint, request, redirect, url_for, session, current_app, flash, render_template
 from flask_login import login_user, logout_user, current_user
 from authlib.integrations.flask_client import OAuth
 import json
 import requests
+import os
 from models import User
 
 # Blueprint
@@ -26,6 +27,47 @@ def init_oauth(app):
         }
     )
 
+def is_email_allowed(email):
+    """Check if the email is in the whitelist file"""
+    whitelist_file = os.path.join("user_data", "allowed_emails.txt")
+    
+    # Create whitelist file if it doesn't exist
+    if not os.path.exists(whitelist_file):
+        os.makedirs("user_data", exist_ok=True)
+        with open(whitelist_file, "w") as f:
+            # Add a default admin email - replace with your own
+            f.write("admin@example.com\n")
+    
+    # Read the whitelist file and check if the email is present
+    try:
+        with open(whitelist_file, "r") as f:
+            allowed_emails = [line.strip().lower() for line in f.readlines()]
+            return email.lower() in allowed_emails
+    except Exception as e:
+        print(f"Error checking whitelist: {e}")
+        return False
+
+def add_email_to_waitlist(email):
+    """Add an email to the waitlist file"""
+    waitlist_file = os.path.join("user_data", "access_requests.txt")
+    os.makedirs("user_data", exist_ok=True)
+    
+    try:
+        # Check if email already exists in the waitlist
+        if os.path.exists(waitlist_file):
+            with open(waitlist_file, "r") as f:
+                existing_emails = [line.strip().lower() for line in f.readlines()]
+                if email.lower() in existing_emails:
+                    return False  # Email already in waitlist
+        
+        # Append the email to the waitlist
+        with open(waitlist_file, "a") as f:
+            f.write(f"{email}\n")
+        return True
+    except Exception as e:
+        print(f"Error adding to waitlist: {e}")
+        return False
+
 @auth_bp.route('/login')
 def login():
     """Redirect to Google for authentication"""
@@ -43,28 +85,67 @@ def login():
 @auth_bp.route('/callback')
 def callback():
     """Handle the callback from Google"""
-    # Get token and user information from Google
-    token = oauth.google.authorize_access_token()
-    user_info = token.get('userinfo')
-    
-    if user_info:
-        # Create or update user
-        user = User(
-            id=user_info['sub'],
-            name=user_info['name'],
-            email=user_info['email'],
-            profile_pic=user_info.get('picture', '')
-        )
-        user.save()
+    try:
+        # Get token and user information from Google
+        token = oauth.google.authorize_access_token()
+        user_info = token.get('userinfo')
         
-        # Log in the user
-        login_user(user)
+        if user_info and 'email' in user_info:
+            # Check if the email is allowed
+            if not is_email_allowed(user_info['email']):
+                # Email not in whitelist - redirect to access request page
+                session['pending_email'] = user_info['email']
+                flash('Your email is not on the allowed list. Please request access.', 'error')
+                return redirect(url_for('auth.request_access'))
+            
+            # Create or update user
+            user = User(
+                id=user_info['sub'],
+                name=user_info['name'],
+                email=user_info['email'],
+                profile_pic=user_info.get('picture', '')
+            )
+            user.save()
+            
+            # Log in the user
+            login_user(user)
+            
+            # Redirect to main page or next URL (if specified)
+            next_url = session.pop('next', '/')
+            return redirect(next_url)
         
-        # Redirect to main page or next URL (if specified)
-        next_url = session.pop('next', '/')
-        return redirect(next_url)
+        flash('Authentication failed. Please try again.', 'error')
+        return redirect(url_for('index'))
+    except Exception as e:
+        print(f"Authentication error: {str(e)}")
+        flash('Authentication error. Please try again later.', 'error')
+        return redirect(url_for('index'))
+
+@auth_bp.route('/request-access', methods=['GET', 'POST'])
+def request_access():
+    """Handle access requests"""
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip()
+        
+        # Validate email format (very basic validation)
+        if not email or '@' not in email:
+            flash('Please enter a valid email address.', 'error')
+            return render_template('request_access.html')
+        
+        # Add email to waitlist
+        success = add_email_to_waitlist(email)
+        
+        if success:
+            flash('Your access request has been submitted. You will be notified when access is granted.', 'success')
+            return redirect(url_for('index'))
+        else:
+            flash('Your email is already in our waitlist. Please wait for approval.', 'info')
+            return redirect(url_for('index'))
     
-    return 'Authentication failed', 401
+    # GET request - show the form
+    # If we have a pending email from OAuth callback, pre-fill it
+    pending_email = session.pop('pending_email', '')
+    return render_template('request_access.html', email=pending_email)
 
 @auth_bp.route('/logout')
 def logout():

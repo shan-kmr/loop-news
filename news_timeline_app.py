@@ -6,7 +6,7 @@ A Flask-based web app that provides a UI for searching news articles and
 displaying them in a timeline view, sorted by recency.
 """
 
-from flask import Flask, render_template, request, redirect, url_for, jsonify, session
+from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash
 from flask_login import LoginManager, login_required, current_user
 import os
 import re
@@ -1190,6 +1190,12 @@ def format_datetime_filter(value, format='%Y-%m-%d %H:%M'):
 
 # Make the is_valid_summary function available in templates
 app.jinja_env.globals['is_valid_summary'] = is_valid_summary
+app.jinja_env.globals['get_flashed_messages'] = flash._get_flashed_messages
+
+@app.route('/request-access', methods=['GET', 'POST'])
+def request_access_redirect():
+    """Redirect to the auth blueprint's request-access route"""
+    return redirect(url_for('auth.request_access'))
 
 if __name__ == '__main__':
     # Initialize models in background threads to avoid blocking app startup
@@ -1921,6 +1927,56 @@ if __name__ == '__main__':
         [data-theme="dark"] .delete-button {
             color: #ff6b6b;
         }
+        
+        .flash-messages {
+            margin-bottom: 20px;
+            width: 100%;
+        }
+        
+        .flash-message {
+            padding: 12px 15px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        .flash-error {
+            background-color: #fee2e2;
+            color: #b91c1c;
+            border: 1px solid #fecaca;
+        }
+        
+        .flash-success {
+            background-color: #d1fae5;
+            color: #065f46;
+            border: 1px solid #a7f3d0;
+        }
+        
+        .flash-info {
+            background-color: #dbeafe;
+            color: #1e40af;
+            border: 1px solid #bfdbfe;
+        }
+        
+        .access-request-form {
+            max-width: 400px;
+            margin: 0 auto;
+            padding: 30px;
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            border: 1px solid var(--border-color);
+        }
+        
+        .access-request-form h2 {
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+        
+        .access-request-form p {
+            margin-bottom: 20px;
+            opacity: 0.8;
+        }
     </style>
 </head>
 <body>
@@ -1945,8 +2001,8 @@ if __name__ == '__main__':
                 <div class="user-avatar">
                     <i class="fas fa-user"></i>
                 </div>
-                <span>guest</span>
-                <a href="{{ url_for('auth.login') }}">login</a>
+                <span>limited access</span>
+                <a href="{{ url_for('request_access_redirect') }}">request access</a>
             {% endif %}
             <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode">
                 <i class="fas fa-moon"></i>
@@ -1956,6 +2012,18 @@ if __name__ == '__main__':
 
     <div class="main-container">
         <main class="brief-list">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    <div class="flash-messages">
+                        {% for category, message in messages %}
+                            <div class="flash-message flash-{{ category }}">
+                                {{ message }}
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+            
             {% if error %}
                 <div class="error">
                     {{ error }}
@@ -2173,10 +2241,10 @@ if __name__ == '__main__':
                     </form>
                 {% endif %}
             {% else %}
-                <p style="margin-bottom: 20px;">You need to <a href="{{ url_for('auth.login') }}" style="color: var(--accent-color);">login</a> to add briefs.</p>
+                <p style="margin-bottom: 20px;">You need to <a href="{{ url_for('request_access_redirect') }}" style="color: var(--accent-color);">request access</a> to add briefs.</p>
                 <div class="modal-buttons">
                     <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">close</button>
-                    <a href="{{ url_for('auth.login') }}" class="modal-button submit-button" style="display: inline-block; text-align: center; text-decoration: none;">login</a>
+                    <a href="{{ url_for('request_access_redirect') }}" class="modal-button submit-button" style="display: inline-block; text-align: center; text-decoration: none;">request access</a>
                 </div>
             {% endif %}
         </div>
