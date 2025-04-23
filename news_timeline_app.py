@@ -463,6 +463,9 @@ def index():
     topic_groups = []
     history = load_search_history()
     
+    # Check if refresh is being forced via URL parameter
+    force_refresh = request.args.get('force_refresh') == 'true'
+    
     # History and timing handling
     sorted_history = sorted(history.values(), key=lambda entry: entry.get('search_time', 0), reverse=True)
     
@@ -470,6 +473,58 @@ def index():
     for entry in sorted_history:
         if 'search_time' in entry:
             entry['formatted_time'] = datetime.fromtimestamp(entry['search_time']).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Check for stale entries in history on home page load and refresh if needed
+    if force_refresh is False and request.method == 'GET' and not request.args.get('query'):
+        refreshed_entries = []
+        for key, entry in history.items():
+            try:
+                # Parse the cached timestamp
+                cached_time_str = entry['timestamp']
+                cached_time = datetime.fromisoformat(cached_time_str)
+                # Remove timezone if present
+                if hasattr(cached_time, 'tzinfo') and cached_time.tzinfo is not None:
+                    cached_time = cached_time.replace(tzinfo=None)
+                
+                # Calculate time difference
+                time_diff = datetime.now() - cached_time
+                
+                # Refresh if older than 60 minutes
+                if time_diff.total_seconds() > 3600:  # 60 minutes
+                    query = entry.get('query')
+                    count = entry.get('count', 10)
+                    freshness = entry.get('freshness', 'pw')
+                    
+                    if query:
+                        print(f"Home page: Auto-refreshing stale entry '{query}' ({int(time_diff.total_seconds() / 60)} minutes old)")
+                        results = entry.get('results')
+                        
+                        if results:
+                            updated_results, days_with_new_articles = update_current_day_results(query, count, freshness, results)
+                            
+                            if updated_results != results:
+                                # Update the entry with fresh results
+                                entry['results'] = updated_results
+                                entry['timestamp'] = datetime.now().isoformat()
+                                
+                                # Clear summaries that need regeneration
+                                if days_with_new_articles and 'day_summaries' in entry:
+                                    for day in days_with_new_articles:
+                                        if day in entry['day_summaries']:
+                                            entry['day_summaries'][day] = None
+                                
+                                # Force regeneration of Today's summary
+                                if 'day_summaries' in entry:
+                                    entry['day_summaries']['Today'] = None
+                                
+                                refreshed_entries.append(query)
+            except Exception as e:
+                print(f"Error checking timestamp for auto-refresh: {str(e)}")
+        
+        # If any entries were refreshed, save the updated history
+        if refreshed_entries:
+            save_search_history(history)
+            print(f"Auto-refreshed {len(refreshed_entries)} stale entries: {', '.join(refreshed_entries)}")
     
     # Collect day summaries regardless of request method
     day_summaries = collect_day_summaries(history)
@@ -2397,8 +2452,13 @@ if __name__ == '__main__':
                 // or if it's the current query being displayed
                 if (window.location.pathname.includes(`/history/${query}`)) {
                     location.reload();
+                } else if (window.location.pathname === '/' || window.location.pathname === '') {
+                    // When timer expires on home page, force refresh the entire page to get updated content
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('force_refresh', 'true');
+                    window.location.href = url.toString();
                 } else {
-                    // For home page, just restart the cycle without reload
+                    // For other pages, just restart the cycle without reload
                     startNewCycle(query);
                     // Re-create the interval
                     timerIntervals[query] = setInterval(() => updateReloadTimer(query), 1000);
@@ -2410,6 +2470,15 @@ if __name__ == '__main__':
             // Add force_refresh parameter to URL and reload
             const url = new URL(window.location.href);
             url.searchParams.set('force_refresh', 'true');
+            
+            // If a specific query is provided, force refresh that query
+            if (query) {
+                // If we're on home page, add query parameter
+                if (window.location.pathname === '/' || window.location.pathname === '') {
+                    url.searchParams.set('query', query);
+                }
+            }
+            
             window.location.href = url.toString();
         }
     </script>
