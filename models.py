@@ -58,6 +58,43 @@ class User(UserMixin):
     def get_history_file(self):
         """Get the path to this user's search history file"""
         users_dir = "user_data"
-        user_dir = os.path.join(users_dir, self.id)
+        
+        # Use email as the identifier for search history
+        # Clean the email to make it safe for filesystem use
+        safe_email = self.email.replace("@", "_at_").replace(".", "_dot_")
+        user_dir = os.path.join(users_dir, safe_email)
         os.makedirs(user_dir, exist_ok=True)
-        return os.path.join(user_dir, "search_history.json") 
+        
+        # Path to the new email-based history file
+        email_history_file = os.path.join(user_dir, "search_history.json")
+        
+        # Check if we need to migrate from the old ID-based location
+        self.migrate_history_to_email()
+        
+        return email_history_file
+        
+    def migrate_history_to_email(self):
+        """Migrate history from user ID-based storage to email-based storage"""
+        users_dir = "user_data"
+        
+        # Old ID-based paths
+        old_user_dir = os.path.join(users_dir, self.id)
+        old_history_file = os.path.join(old_user_dir, "search_history.json")
+        
+        # New email-based paths
+        safe_email = self.email.replace("@", "_at_").replace(".", "_dot_")
+        new_user_dir = os.path.join(users_dir, safe_email)
+        new_history_file = os.path.join(new_user_dir, "search_history.json")
+        
+        # If old history exists but new doesn't, migrate the data
+        if os.path.exists(old_history_file) and not os.path.exists(new_history_file):
+            try:
+                os.makedirs(new_user_dir, exist_ok=True)
+                
+                # Copy the history file
+                import shutil
+                shutil.copy2(old_history_file, new_history_file)
+                
+                print(f"Migrated search history for {self.email} from ID-based to email-based storage")
+            except Exception as e:
+                print(f"Error migrating history for {self.email}: {e}") 

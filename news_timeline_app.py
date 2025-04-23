@@ -20,9 +20,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import threading
 import queue
-import uuid
-import shutil
-from urllib.parse import urlparse
 
 # Import configuration and models
 from config import *
@@ -75,172 +72,6 @@ llama_tokenizer = None
 
 # Create the Brave News API client
 brave_api = None
-
-# User activity tracking
-class UserActivityLogger:
-    """Class to track and store user activity"""
-    
-    def __init__(self, log_dir="user_data/activity_logs"):
-        self.log_dir = log_dir
-        os.makedirs(log_dir, exist_ok=True)
-        self.session_cache = {}
-    
-    def get_user_log_file(self, user_id):
-        """Get the path to the user's log file"""
-        # Create a sanitized filename using the user ID
-        safe_user_id = str(user_id).replace('@', '_at_').replace('.', '_dot_')
-        return os.path.join(self.log_dir, f"{safe_user_id}_activity.json")
-    
-    def get_user_log(self, user_id):
-        """Get the existing log for a user, or create a new one"""
-        log_file = self.get_user_log_file(user_id)
-        
-        if os.path.exists(log_file):
-            try:
-                with open(log_file, 'r') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                # If file is corrupt or missing, start fresh
-                pass
-        
-        # Initialize a new log structure
-        return {
-            "user_id": user_id,
-            "email": "",
-            "name": "",
-            "first_seen": datetime.now().isoformat(),
-            "sessions": [],
-            "briefs": {},
-            "page_views": [],
-            "actions": []
-        }
-    
-    def save_user_log(self, user_id, log_data):
-        """Save the user log to disk"""
-        log_file = self.get_user_log_file(user_id)
-        with open(log_file, 'w') as f:
-            json.dump(log_data, ensure_ascii=False, indent=2, default=str, fp=f)
-    
-    def get_session_id(self, user_id):
-        """Get the current session ID for a user, creating a new one if needed"""
-        if user_id not in self.session_cache:
-            self.session_cache[user_id] = str(uuid.uuid4())
-        return self.session_cache[user_id]
-    
-    def log_login(self, user_id, email, name, success):
-        """Log a user login attempt"""
-        log_data = self.get_user_log(user_id)
-        
-        # Update basic user info
-        log_data["email"] = email
-        log_data["name"] = name
-        
-        # Create a new session
-        session_id = self.get_session_id(user_id)
-        session_data = {
-            "session_id": session_id,
-            "login_time": datetime.now().isoformat(),
-            "login_success": success,
-            "user_agent": request.user_agent.string,
-            "ip_address": request.remote_addr,
-            "logout_time": None,
-            "duration_seconds": 0
-        }
-        
-        log_data["sessions"].append(session_data)
-        self.save_user_log(user_id, log_data)
-        return session_id
-    
-    def log_logout(self, user_id):
-        """Log a user logout"""
-        log_data = self.get_user_log(user_id)
-        session_id = self.get_session_id(user_id)
-        
-        # Find and update the current session
-        for session in reversed(log_data["sessions"]):
-            if session["session_id"] == session_id and session["logout_time"] is None:
-                session["logout_time"] = datetime.now().isoformat()
-                # Calculate session duration
-                login_time = datetime.fromisoformat(session["login_time"])
-                logout_time = datetime.fromisoformat(session["logout_time"])
-                session["duration_seconds"] = (logout_time - login_time).total_seconds()
-                break
-        
-        self.save_user_log(user_id, log_data)
-        # Clear the session from cache
-        if user_id in self.session_cache:
-            del self.session_cache[user_id]
-    
-    def log_page_view(self, user_id, page, query_params=None):
-        """Log a page view"""
-        if not user_id:
-            return  # Skip logging for anonymous users
-        
-        log_data = self.get_user_log(user_id)
-        session_id = self.get_session_id(user_id)
-        
-        view_data = {
-            "session_id": session_id,
-            "timestamp": datetime.now().isoformat(),
-            "page": page,
-            "query_params": query_params or {},
-            "referrer": request.referrer
-        }
-        
-        log_data["page_views"].append(view_data)
-        self.save_user_log(user_id, log_data)
-    
-    def log_brief_action(self, user_id, action_type, brief_query, details=None):
-        """Log an action related to a brief"""
-        if not user_id:
-            return  # Skip logging for anonymous users
-        
-        log_data = self.get_user_log(user_id)
-        session_id = self.get_session_id(user_id)
-        
-        # Initialize brief tracking if needed
-        if brief_query not in log_data["briefs"]:
-            log_data["briefs"][brief_query] = {
-                "created": datetime.now().isoformat(),
-                "actions": []
-            }
-        
-        action_data = {
-            "session_id": session_id,
-            "timestamp": datetime.now().isoformat(),
-            "action": action_type,
-            "details": details or {}
-        }
-        
-        log_data["briefs"][brief_query]["actions"].append(action_data)
-        
-        # Also add to the general actions log
-        general_action = action_data.copy()
-        general_action["brief_query"] = brief_query
-        log_data["actions"].append(general_action)
-        
-        self.save_user_log(user_id, log_data)
-    
-    def log_user_action(self, user_id, action_type, details=None):
-        """Log a general user action"""
-        if not user_id:
-            return  # Skip logging for anonymous users
-        
-        log_data = self.get_user_log(user_id)
-        session_id = self.get_session_id(user_id)
-        
-        action_data = {
-            "session_id": session_id,
-            "timestamp": datetime.now().isoformat(),
-            "action": action_type,
-            "details": details or {}
-        }
-        
-        log_data["actions"].append(action_data)
-        self.save_user_log(user_id, log_data)
-
-# Initialize the activity logger
-activity_logger = UserActivityLogger()
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -1407,76 +1238,6 @@ def raison_detre():
         query=None,
         error=None
     )
-
-# Track user logout
-@app.route('/auth/logout')
-@login_required
-def track_logout():
-    """Track user logout before actual logout happens"""
-    if current_user.is_authenticated:
-        activity_logger.log_logout(current_user.id)
-    return redirect(url_for('auth.logout'))
-
-# Request lifecycle hooks for tracking
-@app.before_request
-def track_request():
-    """Track each request to the application"""
-    if current_user.is_authenticated:
-        # Track page view
-        query_params = dict(request.args)
-        activity_logger.log_page_view(
-            current_user.id,
-            request.path,
-            query_params
-        )
-        
-        # Update session timestamp to track activity
-        session['last_activity'] = datetime.now().isoformat()
-
-@app.after_request
-def after_request_callback(response):
-    """Process after each request"""
-    return response
-
-# Extend the User model to handle activity tracking
-original_user_loader = login_manager.user_loader
-
-def user_loader_with_tracking(user_id):
-    """Custom user loader that also tracks user login activity"""
-    user = load_user(user_id)  # Use the original load_user function directly
-    if user:
-        # Update the user's activity log
-        if session.get('logged_in_tracked') != user_id:
-            # The user_id is what we need to pass, not user.id
-            activity_logger.log_login(user_id, getattr(user, 'email', ''), getattr(user, 'name', ''), True)
-            session['logged_in_tracked'] = user_id
-    return user
-
-# Now manually set the user_loader to our custom function
-login_manager.user_loader(user_loader_with_tracking)
-
-# New API endpoint for tracking client-side events
-@app.route('/api/track_activity', methods=['POST'])
-def track_activity():
-    """API endpoint for tracking client-side user activity"""
-    if not current_user.is_authenticated:
-        return jsonify({"success": False, "error": "Not authenticated"}), 401
-    
-    data = request.get_json()
-    action_type = data.get('action_type')
-    details = data.get('details', {})
-    brief_query = data.get('brief_query')
-    
-    if not action_type:
-        return jsonify({"success": False, "error": "Missing action_type"}), 400
-    
-    # Log based on whether this is a brief-specific action
-    if brief_query:
-        activity_logger.log_brief_action(current_user.id, action_type, brief_query, details)
-    else:
-        activity_logger.log_user_action(current_user.id, action_type, details)
-    
-    return jsonify({"success": True})
 
 if __name__ == '__main__':
     # Initialize models in background threads to avoid blocking app startup
@@ -2672,33 +2433,8 @@ if __name__ == '__main__':
             }
         }
         
-        // User activity tracking helpers
-        function trackAction(actionType, details = {}, briefQuery = null) {
-            // Only track for authenticated users
-            {% if user.is_authenticated %}
-            fetch('/api/track_activity', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    action_type: actionType,
-                    details: details,
-                    brief_query: briefQuery
-                }),
-                // Use credentials to include session cookies
-                credentials: 'include'
-            }).catch(error => {
-                console.error('Activity tracking error:', error);
-            });
-            {% endif %}
-        }
-        
         function deleteHistoryItem(query) {
             if (confirm('are you sure you want to delete this brief?')) {
-                // Track the deletion
-                trackAction('delete_brief', {}, query);
-                
                 fetch('/api/delete_history/' + encodeURIComponent(query), {
                     method: 'POST',
                 })
@@ -2713,9 +2449,6 @@ if __name__ == '__main__':
         
         function clearHistory() {
             if (confirm('are you sure you want to clear all briefs?')) {
-                // Track clearing all briefs
-                trackAction('clear_all_briefs');
-                
                 fetch('/api/clear_history', {
                     method: 'POST',
                 })
@@ -2729,26 +2462,18 @@ if __name__ == '__main__':
         }
         
         function openNewBriefModal() {
-            // Track modal open
-            trackAction('open_brief_modal');
             document.getElementById('newBriefModal').style.display = 'flex';
         }
         
         function closeNewBriefModal() {
-            // Track modal close
-            trackAction('close_brief_modal');
             document.getElementById('newBriefModal').style.display = 'none';
         }
         
         function openRequestAccessModal() {
-            // Track request access modal open
-            trackAction('open_access_modal');
             document.getElementById('requestAccessModal').style.display = 'flex';
         }
         
         function closeRequestAccessModal() {
-            // Track request access modal close
-            trackAction('close_access_modal');
             document.getElementById('requestAccessModal').style.display = 'none';
         }
 
@@ -2757,114 +2482,8 @@ if __name__ == '__main__':
         let currentQuery = ""; // Store current query for timer management
         let timerIntervals = {}; // Store intervals for each query
         
-        // Track time spent on page
-        let lastActivityPing = Date.now();
-        let totalActiveTime = 0;
-        let isActive = true;
-        
-        function updateActiveTime() {
-            const now = Date.now();
-            const elapsed = (now - lastActivityPing) / 1000;
-            totalActiveTime += elapsed;
-            lastActivityPing = now;
-        }
-        
-        function initializeActivityTracking() {
-            // Track visibility changes
-            document.addEventListener('visibilitychange', function() {
-                if (document.visibilityState === 'visible') {
-                    isActive = true;
-                    trackAction('page_visible');
-                } else {
-                    isActive = false;
-                    updateActiveTime();
-                    trackAction('page_hidden', { active_seconds: totalActiveTime });
-                }
-            });
-            
-            // Track user activity periodically
-            setInterval(function() {
-                if (isActive) {
-                    updateActiveTime();
-                    
-                    // Send activity ping every minute
-                    const now = Date.now();
-                    if (now - lastActivityPing > 60000) { // 1 minute
-                        trackAction('active_time_update', { active_seconds: totalActiveTime });
-                        lastActivityPing = now;
-                    }
-                }
-            }, 5000); // Check every 5 seconds
-            
-            // Track button clicks
-            document.addEventListener('click', function(e) {
-                // Find closest clickable element
-                const button = e.target.closest('button, a, .brief-card, .timeline-item');
-                if (button) {
-                    const type = button.tagName.toLowerCase();
-                    const text = button.textContent.trim();
-                    let actionDetails = { element_type: type, text: text };
-                    
-                    // Get additional details based on element type
-                    if (button.classList.contains('brief-card')) {
-                        const query = button.querySelector('.brief-title')?.textContent.trim();
-                        if (query) {
-                            trackAction('view_brief', actionDetails, query);
-                            return;
-                        }
-                    }
-                    
-                    // Add element classes for better identification
-                    if (button.className) {
-                        actionDetails.classes = button.className;
-                    }
-                    
-                    // Add URL for links
-                    if (type === 'a' && button.href) {
-                        actionDetails.href = button.href;
-                    }
-                    
-                    trackAction('click', actionDetails);
-                }
-            });
-            
-            // Track form submissions
-            document.addEventListener('submit', function(e) {
-                const form = e.target;
-                if (form) {
-                    const formData = new FormData(form);
-                    const formDetails = {};
-                    
-                    // Convert FormData to object, omitting any sensitive fields
-                    for (let [key, value] of formData.entries()) {
-                        // Skip password fields
-                        if (!key.includes('password')) {
-                            formDetails[key] = value;
-                        }
-                    }
-                    
-                    // Track form submission
-                    trackAction('form_submit', {
-                        form_id: form.id || null,
-                        action: form.action,
-                        fields: formDetails
-                    });
-                }
-            });
-        }
-        
         // Initialize functions when page loads
         document.addEventListener('DOMContentLoaded', function() {
-            // Track page load
-            trackAction('page_load', {
-                url: window.location.pathname,
-                referrer: document.referrer,
-                query_params: Object.fromEntries(new URLSearchParams(window.location.search))
-            });
-            
-            // Initialize activity tracking
-            initializeActivityTracking();
-            
             // Get the current query from the page
             const queryElements = document.querySelectorAll('.brief-title');
             for (let element of queryElements) {
@@ -3104,9 +2723,6 @@ if __name__ == '__main__':
         }
 
         function forceRefresh(query) {
-            // Track the refresh action
-            trackAction('force_refresh', {}, query);
-            
             // Add force_refresh parameter to URL and reload
             const url = new URL(window.location.href);
             url.searchParams.set('force_refresh', 'true');
