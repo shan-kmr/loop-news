@@ -393,8 +393,22 @@ def update_current_day_results(query, count, freshness, old_results):
         return old_results, []
 
 def collect_day_summaries(history):
-    """Collect all day summaries from history entries for display on the home page."""
-    all_summaries = {}
+    """Collect latest day (Today) summaries from history entries for display on the home page."""
+    latest_summaries = {}
+    
+    # Priority order of days, with "Today" being highest priority
+    day_priority = {
+        "Today": 1,
+        "Yesterday": 2,
+        "2 days ago": 3,
+        "3 days ago": 4,
+        "4 days ago": 5,
+        "5 days ago": 6,
+        "6 days ago": 7,
+        "1 week ago": 8,
+        "2 weeks ago": 9,
+        "1 month ago": 10
+    }
     
     for key, entry in history.items():
         query = entry.get('query', '')
@@ -402,18 +416,29 @@ def collect_day_summaries(history):
             continue
             
         if 'day_summaries' in entry and entry['day_summaries']:
-            # Find the most recent day with a summary
+            best_day = None
+            best_priority = float('inf')
+            best_summary = None
+            
+            # Find the most recent day with a valid summary
             for day, summary in entry['day_summaries'].items():
-                if summary:  # Only if summary exists
-                    # Store as key: day_query
-                    summary_key = f"{day}_{query}"
-                    all_summaries[summary_key] = {
-                        'query': query,
-                        'day': day,
-                        'summary': summary
-                    }
+                if is_valid_summary(summary):
+                    priority = day_priority.get(day, 999)  # Default to low priority if not in our list
+                    if priority < best_priority:
+                        best_priority = priority
+                        best_day = day
+                        best_summary = summary
+            
+            # If we found a valid summary, store it
+            if best_day and best_summary:
+                summary_key = f"{best_day}_{query}"
+                latest_summaries[summary_key] = {
+                    'query': query,
+                    'day': best_day,
+                    'summary': best_summary,
+                }
     
-    return all_summaries
+    return latest_summaries
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -448,6 +473,11 @@ def index():
     
     # Collect day summaries regardless of request method
     day_summaries = collect_day_summaries(history)
+    print(f"Collected {len(day_summaries)} day summaries for home page display")
+    
+    # Debug each summary
+    for key, summary in day_summaries.items():
+        print(f"Home page summary for '{summary['query']}' on {summary['day']}: {summary['summary'][:50]}...")
     
     # Process form submission
     if request.method == 'POST':
@@ -524,6 +554,19 @@ def index():
                         if results and 'results' in results:
                             sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
                             topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, query, day_summaries)
+                            
+                            # Ensure we have a Today summary, force generation if needed
+                            if 'Today' not in day_summaries or not is_valid_summary(day_summaries.get('Today')):
+                                # Find today's articles
+                                today_articles = [a for a in sorted_articles if day_group_filter(a) == 'Today']
+                                if today_articles:
+                                    print(f"Force generating Today's summary for cached results '{query}'")
+                                    today_summary = summarize_daily_news(today_articles, query)
+                                    if is_valid_summary(today_summary):
+                                        day_summaries['Today'] = today_summary
+                                        cached_entry['day_summaries'] = day_summaries
+                                        save_search_history(history)
+                                        print(f"Successfully added Today's summary to cache: {today_summary[:50]}...")
                 except Exception as e:
                     print(f"Error parsing cached timestamp: {e}")
                     use_cache = False
@@ -548,7 +591,19 @@ def index():
                         day_summaries = {}
                         topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, query, day_summaries)
                         
+                        # Ensure we have a Today summary, force generation if needed
+                        if 'Today' not in day_summaries or not is_valid_summary(day_summaries.get('Today')):
+                            # Find today's articles
+                            today_articles = [a for a in sorted_articles if day_group_filter(a) == 'Today']
+                            if today_articles:
+                                print(f"Force generating Today's summary for '{query}'")
+                                today_summary = summarize_daily_news(today_articles, query)
+                                if is_valid_summary(today_summary):
+                                    day_summaries['Today'] = today_summary
+                                    print(f"Successfully added Today's summary: {today_summary[:50]}...")
+                        
                         # Cache the results with summaries
+                        cache_key = f"{query}_{count}_{freshness}"
                         history[cache_key] = {
                             'query': query,
                             'count': count,
@@ -558,6 +613,7 @@ def index():
                             'day_summaries': day_summaries
                         }
                         save_search_history(history)
+                        print(f"Cached new results for query: '{query}' with {len(day_summaries)} summaries")
                 except Exception as e:
                     error = f"Error searching for news: {str(e)}"
     
@@ -581,6 +637,7 @@ def index():
                           error=error,
                           topic_groups=topic_groups,
                           day_summaries=day_summaries,
+                          history=history,
                           active_tab="search",
                           user=current_user)
 
@@ -715,11 +772,18 @@ def history_item(query):
                     # Pass existing day summaries to avoid regenerating summaries
                     topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, current_query, day_summaries)
                     
-                    # Check if we need to update summaries in history
+                    # Save the updated day_summaries back to the entry to ensure they're stored in the cache
+                    # This is important for ensuring summaries persist between page visits
+                    if 'day_summaries' not in entry or entry['day_summaries'] != day_summaries:
+                        entry['day_summaries'] = day_summaries
+                        save_search_history(history)
+                        print(f"Saved {len(day_summaries)} day summaries to cache for query: '{query}'")
+                    
+                    # Check if we need to update summaries in history (redundant now but kept for safety)
                     summary_changed = False
                     for topic in topic_groups:
                         day = topic['day_group']
-                        if day in day_summaries and day_summaries[day] != topic.get('day_summary'):
+                        if day in day_summaries and day_summaries[day] != topic.get('day_summary') and is_valid_summary(topic.get('day_summary')):
                             summary_changed = True
                             day_summaries[day] = topic.get('day_summary')
                     
@@ -774,7 +838,7 @@ def history_item(query):
                     'day_summaries': day_summaries
                 }
                 save_search_history(history)
-                print(f"Cached new results for query: '{query}'")
+                print(f"Cached new results for query: '{query}' with {len(day_summaries)} summaries")
         except Exception as e:
             print(f"Error performing search: {str(e)}")
     
@@ -790,6 +854,7 @@ def history_item(query):
                           history_entries=history_entries,
                           topic_groups=topic_groups,
                           day_summaries=day_summaries,
+                          history=history,
                           active_tab="history",
                           user=current_user)
 
@@ -962,14 +1027,37 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
                 
                 # Only update if we got a valid summary
                 if is_valid_summary(summary):
+                    print(f"Successfully generated summary for {day}: {summary[:50]}...")
                     day_summaries[day] = summary
                     
                     # Update topic groups with new summaries
                     for topic in topic_groups:
                         if topic['day_group'] == day:
                             topic['day_summary'] = summary
+                    
+                    # This code was moved out of the loop to avoid excessive summary generation
+                    # We now directly save the summaries as they're generated
+                    try:
+                        # Try to find the history entry for this query and update it
+                        history = load_search_history()
+                        for key, entry in history.items():
+                            if entry.get('query') == query:
+                                entry['day_summaries'] = day_summaries
+                                save_search_history(history)
+                                print(f"Immediately saved new {day} summary to history for {query}")
+                                break
+                    except Exception as e:
+                        print(f"Error saving summary to history: {e}")
                 else:
                     print(f"Failed to generate valid summary for day: {day}")
+        
+        # Count how many topics have summaries 
+        topics_with_summaries = 0
+        for topic in topic_groups:
+            if is_valid_summary(topic.get('day_summary')):
+                topics_with_summaries += 1
+                
+        print(f"Grouped {len(topic_groups)} topics, {topics_with_summaries} have summaries. Day summaries dict has {len(day_summaries)} entries.")
         
         return topic_groups
     
@@ -1037,6 +1125,9 @@ def format_datetime_filter(value, format='%Y-%m-%d %H:%M'):
             return value
     return value.strftime(format)
 
+# Make the is_valid_summary function available in templates
+app.jinja_env.globals['is_valid_summary'] = is_valid_summary
+
 if __name__ == '__main__':
     # Initialize models in background threads to avoid blocking app startup
     if LLAMA_AVAILABLE or OPENAI_AVAILABLE:
@@ -1049,7 +1140,7 @@ if __name__ == '__main__':
         f.write('''<!DOCTYPE html>
 <html>
 <head>
-    <title>news timeline</title>
+    <title>loop: track all moves in a single timeline</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
@@ -1057,10 +1148,19 @@ if __name__ == '__main__':
         :root {
             --bg-color: #f8f8f8;
             --text-color: #333;
-            --accent-color: #6d28d9;
-            --secondary-color: #a78bfa;
+            --accent-color: #dad3c8;
+            --secondary-color: #c5bcb1;
             --border-color: #e5e7eb;
             --card-bg: #ffffff;
+        }
+        
+        [data-theme="dark"] {
+            --bg-color: #121212;
+            --text-color: #ffffff;
+            --accent-color: #4a4a4a;
+            --secondary-color: #333333;
+            --border-color: #2c2c2c;
+            --card-bg: #1e1e1e;
         }
         
         * {
@@ -1098,13 +1198,13 @@ if __name__ == '__main__':
             align-items: center;
             padding: 20px 0;
             border-bottom: 1px solid var(--border-color);
-            margin-bottom: 30px;
+            margin-bottom: 15px;
         }
         
         .logo {
             font-size: 24px;
             font-weight: 700;
-            color: var(--accent-color);
+            color: #000000;
         }
         
         nav {
@@ -1115,11 +1215,48 @@ if __name__ == '__main__':
         nav a {
             padding: 5px 10px;
             border-radius: 4px;
+            color: var(--text-color);
+            background-color: transparent;
+            transition: color 0.2s ease;
+            box-shadow: none;
+            text-decoration: none;
         }
         
         nav a.active {
-            background-color: var(--secondary-color);
-            color: white;
+            background-color: transparent;
+            color: var(--text-color);
+            font-weight: 500;
+            position: relative;
+        }
+        
+        nav a.active:after {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            bottom: 0;
+            left: 0;
+            background-color: var(--text-color);
+        }
+        
+        nav a:hover {
+            background-color: transparent;
+            text-decoration: underline;
+        }
+        
+        .theme-toggle {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background-color: transparent;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-color);
+            font-size: 18px;
+            margin-left: 10px;
         }
         
         .user-info {
@@ -1137,7 +1274,7 @@ if __name__ == '__main__':
             display: flex;
             align-items: center;
             justify-content: center;
-            color: white;
+            color: #000000;
         }
         
         .main-container {
@@ -1161,16 +1298,24 @@ if __name__ == '__main__':
             border: 1px solid var(--border-color);
         }
         
+        [data-theme="dark"] .brief-card {
+            box-shadow: none;
+        }
+        
         .brief-card:hover {
             box-shadow: 0 4px 8px rgba(0,0,0,0.1);
             transform: translateY(-2px);
+        }
+        
+        [data-theme="dark"] .brief-card:hover {
+            box-shadow: none;
         }
         
         .brief-title {
             font-size: 24px;
             font-weight: 600;
             margin-bottom: 10px;
-            color: var(--accent-color);
+            color: var(--text-color);
         }
         
         .brief-meta {
@@ -1181,10 +1326,17 @@ if __name__ == '__main__':
             margin-bottom: 16px;
         }
         
-        .brief-summary {
-            line-height: 1.7;
+        .brief-summary-container {
+            display: flex;
+            flex-direction: column;
             margin-bottom: 16px;
-            font-weight: 300;
+        }
+        
+        .summary-date {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-color);
+            margin-bottom: 5px;
         }
         
         .refresh-info {
@@ -1198,15 +1350,24 @@ if __name__ == '__main__':
             align-self: flex-start;
         }
         
+        [data-theme="dark"] .refresh-info {
+            background-color: #333333;
+            color: #ffffff;
+        }
+        
         .reload-timer {
             font-weight: bold;
             color: var(--accent-color);
             margin-left: 4px;
         }
         
+        [data-theme="dark"] .reload-timer {
+            color: #ffffff;
+        }
+        
         .cta-button {
             background-color: var(--accent-color);
-            color: white;
+            color: var(--text-color);
             border: none;
             padding: 12px 20px;
             border-radius: 6px;
@@ -1216,10 +1377,15 @@ if __name__ == '__main__':
             align-items: center;
             gap: 8px;
             margin-top: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        [data-theme="dark"] .cta-button {
+            box-shadow: none;
         }
         
         .cta-button:hover {
-            background-color: #5b21b6;
+            background-color: var(--secondary-color);
         }
         
         .search-box {
@@ -1268,17 +1434,52 @@ if __name__ == '__main__':
             margin-top: 30px;
             margin-bottom: 15px;
             padding-bottom: 10px;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-color);
         }
         
         .day-summary {
-            background-color: #f5f3ff;
+            background-color: var(--accent-color);
             padding: 15px 20px;
             border-radius: 6px;
             margin-bottom: 20px;
             line-height: 1.7;
             font-style: italic;
-            color: #4a5568;
+            color: var(--text-color);
+        }
+        
+        /* Flickering red dot */
+        .live-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: #ff3b30;
+            border-radius: 50%;
+            margin-right: 6px;
+            vertical-align: middle;
+            position: relative;
+            top: -1px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.4;
+            }
+            100% {
+                opacity: 1;
+            }
+        }
+        
+        .latest-update {
+            font-style: italic;
+            color: #888;
+            font-weight: 300;
+            margin-bottom: 20px;
+            font-size: 14px;
         }
         
         .timeline-item {
@@ -1300,12 +1501,12 @@ if __name__ == '__main__':
             font-size: 18px;
             font-weight: 600;
             margin-right: 10px;
-            color: var(--accent-color);
+            color: var(--text-color);
         }
         
         .topic-count {
             background-color: var(--secondary-color);
-            color: white;
+            color: #000000;
             border-radius: 12px;
             padding: 2px 10px;
             font-size: 13px;
@@ -1324,15 +1525,16 @@ if __name__ == '__main__':
         }
         
         .article-item {
-            border-left: 2px solid #e2e8f0;
+            border-left: 2px solid var(--border-color);
             padding: 15px;
             margin-bottom: 20px;
-            background-color: #fafafa;
+            background-color: var(--card-bg);
             border-radius: 4px;
         }
         
         .timeline-source {
-            color: #4a5568;
+            color: var(--text-color);
+            opacity: 0.7;
             font-size: 14px;
             margin-bottom: 10px;
         }
@@ -1341,11 +1543,13 @@ if __name__ == '__main__':
             font-size: 17px;
             font-weight: 600;
             margin-bottom: 10px;
+            color: var(--text-color);
         }
         
         .timeline-desc {
             margin-bottom: 15px;
-            color: #4a5568;
+            color: var(--text-color);
+            opacity: 0.9;
             line-height: 1.6;
         }
         
@@ -1380,7 +1584,7 @@ if __name__ == '__main__':
             height: 60px;
             border-radius: 50%;
             background-color: var(--accent-color);
-            color: white;
+            color: var(--text-color);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -1391,10 +1595,19 @@ if __name__ == '__main__':
             transition: all 0.3s ease;
         }
         
+        [data-theme="dark"] .fab-button {
+            box-shadow: none;
+            color: #ffffff;
+        }
+        
         .fab-button:hover {
-            background-color: #5b21b6;
+            background-color: var(--secondary-color);
             transform: translateY(-2px);
             box-shadow: 0 6px 15px rgba(0,0,0,0.25);
+        }
+        
+        [data-theme="dark"] .fab-button:hover {
+            box-shadow: none;
         }
         
         .modal {
@@ -1411,17 +1624,23 @@ if __name__ == '__main__':
         }
         
         .modal-content {
-            background-color: white;
+            background-color: var(--card-bg);
             padding: 30px;
             border-radius: 8px;
             width: 90%;
             max-width: 500px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        }
+        
+        [data-theme="dark"] .modal-content {
+            box-shadow: none;
         }
         
         .modal-title {
             font-size: 22px;
             font-weight: 600;
             margin-bottom: 20px;
+            color: var(--text-color);
         }
         
         .modal-buttons {
@@ -1446,7 +1665,7 @@ if __name__ == '__main__':
         
         .submit-button {
             background-color: var(--accent-color);
-            color: white;
+            color: #000000;
         }
         
         @media (max-width: 768px) {
@@ -1464,11 +1683,59 @@ if __name__ == '__main__':
                 padding: 20px;
             }
         }
+        
+        /* Dark mode overrides */
+        [data-theme="dark"] .logo,
+        [data-theme="dark"] h2,
+        [data-theme="dark"] .brief-title,
+        [data-theme="dark"] .topic-title,
+        [data-theme="dark"] .summary-date,
+        [data-theme="dark"] .timeline-day,
+        [data-theme="dark"] .timeline-source,
+        [data-theme="dark"] .timeline-title,
+        [data-theme="dark"] .timeline-desc,
+        [data-theme="dark"] .today,
+        [data-theme="dark"] .yesterday,
+        [data-theme="dark"] .latest-update,
+        [data-theme="dark"] .day-summary,
+        [data-theme="dark"] .topic-header,
+        [data-theme="dark"] .brief-summary,
+        [data-theme="dark"] .reload-timer-label,
+        [data-theme="dark"] .reload-timer,
+        [data-theme="dark"] .modal-title,
+        [data-theme="dark"] .submit-button,
+        [data-theme="dark"] .cancel-button {
+            color: #ffffff;
+        }
+        /* More comprehensive dark mode shadow removal */
+        [data-theme="dark"] .brief-card,
+        [data-theme="dark"] .brief-card:hover,
+        [data-theme="dark"] .fab-button,
+        [data-theme="dark"] .fab-button:hover,
+        [data-theme="dark"] .timeline-container,
+        [data-theme="dark"] .modal-content,
+        [data-theme="dark"] .modal-button,
+        [data-theme="dark"] .cta-button,
+        [data-theme="dark"] .cta-button:hover,
+        [data-theme="dark"] nav a,
+        [data-theme="dark"] nav a.active,
+        [data-theme="dark"] .article-item {
+            box-shadow: none !important;
+            -webkit-box-shadow: none !important;
+            -moz-box-shadow: none !important;
+        }
+        
+        /* Global shadow removal for dark mode */
+        [data-theme="dark"] * {
+            box-shadow: none !important;
+            -webkit-box-shadow: none !important;
+            -moz-box-shadow: none !important;
+        }
     </style>
 </head>
 <body>
     <header>
-        <div class="logo">news timeline</div>
+        <div class="logo">loop: track all moves in a single timeline.</div>
         <nav>
             <a href="/" class="{% if active_tab == 'search' %}active{% endif %}">home</a>
             <a href="/history" class="{% if active_tab == 'history' %}active{% endif %}">briefs</a>
@@ -1491,6 +1758,9 @@ if __name__ == '__main__':
                 <span>guest</span>
                 <a href="{{ url_for('auth.login') }}">login</a>
             {% endif %}
+            <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode">
+                <i class="fas fa-moon"></i>
+            </button>
         </div>
     </header>
 
@@ -1503,57 +1773,52 @@ if __name__ == '__main__':
             {% endif %}
             
             {% if active_tab == 'search' %}
-                <form method="post" action="/" id="searchForm">
-                    <input type="text" id="query" name="query" value="{{ query }}" placeholder="search for a topic..." class="search-box" required>
-                    <div class="search-options">
-                        <select id="count" name="count" class="option-select">
-                            <option value="10">10 results</option>
-                            <option value="20">20 results</option>
-                            <option value="30">30 results</option>
-                            <option value="50" selected>50 results</option>
-                        </select>
-                        <select id="freshness" name="freshness" class="option-select">
-                            <option value="pd">past day</option>
-                            <option value="pw">past week</option>
-                            <option value="pm">past month</option>
-                            <option value="py" selected>past year</option>
-                        </select>
-                        <select id="similarity_threshold" name="similarity_threshold" class="option-select">
-                            <option value="0.2">low similarity</option>
-                            <option value="0.3">medium similarity</option>
-                            <option value="0.4" selected>high similarity</option>
-                        </select>
-                        <input type="hidden" name="force_refresh" id="force_refresh" value="false">
-                    </div>
-                    <button type="submit" class="cta-button">
-                        <i class="fas fa-search"></i> 
-                        track this topic
-                    </button>
-                </form>
+                <!-- Search form removed from here -->
                 
                 {% if history_entries %}
-                    <h2 style="margin: 40px 0 20px 0;">your briefs</h2>
+                    <h2 style="margin: 20px 0 20px 0;">your briefs</h2>
+                    {% if history_entries|length > 0 %}
+                        <p class="latest-update">last updated {{ history_entries[0].timestamp|format_datetime('%b %d, %Y') }}</p>
+                    {% endif %}
                     {% for entry in history_entries %}
                         <div class="brief-card" onclick="window.location.href='/history/{{ entry.query }}'">
                             <div class="brief-title">{{ entry.query }}</div>
                             <div class="brief-meta">
-                                <span>updated {{ entry.timestamp|format_datetime }}</span>
+                                <!-- Date and time removed from here -->
                                 <div class="refresh-info">
                                     <span class="reload-timer-label">auto-refresh in:</span>
                                     <span class="reload-timer" data-query="{{ entry.query }}">--:--</span>
                                 </div>
                             </div>
                             {% set has_summary = false %}
-                            {% if day_summaries %}
-                                {% for key, summary_entry in day_summaries.items() %}
-                                    {% if summary_entry.query == entry.query and summary_entry.summary %}
-                                        <p class="brief-summary">{{ summary_entry.summary }}</p>
+                            
+                            {# First priority: Show Today's summary if available #}
+                            {% for key, entry_data in history.items() %}
+                                {% if entry_data.query == entry.query and entry_data.day_summaries and 'Today' in entry_data.day_summaries and is_valid_summary(entry_data.day_summaries['Today']) and not has_summary %}
+                                    <div class="brief-summary-container">
+                                        <div class="summary-date today">Today <span class="live-dot"></span></div>
+                                        <p class="brief-summary">{{ entry_data.day_summaries['Today'] }}</p>
+                                    </div>
+                                    {% set has_summary = true %}
+                                {% endif %}
+                            {% endfor %}
+                            
+                            {# Second priority: Show Yesterday's summary if available #}
+                            {% if not has_summary %}
+                                {% for key, entry_data in history.items() %}
+                                    {% if entry_data.query == entry.query and entry_data.day_summaries and 'Yesterday' in entry_data.day_summaries and is_valid_summary(entry_data.day_summaries['Yesterday']) and not has_summary %}
+                                        <div class="brief-summary-container">
+                                            <div class="summary-date yesterday">Yesterday</div>
+                                            <p class="brief-summary">{{ entry_data.day_summaries['Yesterday'] }}</p>
+                                        </div>
                                         {% set has_summary = true %}
                                     {% endif %}
                                 {% endfor %}
                             {% endif %}
+                            
+                            {# Last resort: fallback text #}
                             {% if not has_summary %}
-                                <p class="brief-summary">click to see the latest news about "{{ entry.query }}"</p>
+                                <p class="brief-summary">click to view summary for "{{ entry.query }}"</p>
                             {% endif %}
                         </div>
                     {% endfor %}
@@ -1592,6 +1857,9 @@ if __name__ == '__main__':
                                         {% set ns.current_day_summary = topic.day_summary %}
                                         <div class="timeline-day">
                                             {{ day }}
+                                            {% if day == "Today" %}
+                                                <span class="live-dot"></span>
+                                            {% endif %}
                                         </div>
                                         
                                         {% if topic.day_summary %}
@@ -1663,8 +1931,8 @@ if __name__ == '__main__':
         <div class="modal-content">
             <h2 class="modal-title">add new brief</h2>
             <form method="post" action="/" id="modalSearchForm">
-                <input type="text" name="query" placeholder="search for a topic..." class="search-box" required>
-                <div class="search-options">
+                <input type="text" name="query" placeholder="add a topic" class="search-box" required>
+                <div class="search-options" style="display: none;">
                     <select name="count" class="option-select">
                         <option value="10">10 results</option>
                         <option value="20">20 results</option>
@@ -1785,6 +2053,31 @@ if __name__ == '__main__':
                     closeNewBriefModal();
                 }
             }
+            
+            // Dark mode toggle functionality
+            const themeToggle = document.getElementById('theme-toggle');
+            const themeIcon = themeToggle.querySelector('i');
+            
+            // Check for saved theme preference or use device preference
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                themeIcon.className = 'fas fa-sun';
+            }
+            
+            // Toggle theme when button is clicked
+            themeToggle.addEventListener('click', function() {
+                const currentTheme = document.documentElement.getAttribute('data-theme');
+                if (currentTheme === 'dark') {
+                    document.documentElement.removeAttribute('data-theme');
+                    localStorage.setItem('theme', 'light');
+                    themeIcon.className = 'fas fa-moon';
+                } else {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                    localStorage.setItem('theme', 'dark');
+                    themeIcon.className = 'fas fa-sun';
+                }
+            });
         });
         
         function initTimerForElement(element, query) {
@@ -1939,7 +2232,7 @@ if __name__ == '__main__':
         f.write('''<!DOCTYPE html>
 <html>
 <head>
-    <title>error - news timeline</title>
+    <title>error - loop</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
