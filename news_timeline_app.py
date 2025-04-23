@@ -1195,6 +1195,11 @@ app.jinja_env.globals['is_valid_summary'] = is_valid_summary
 @app.route('/request-access', methods=['GET', 'POST'])
 def request_access_redirect():
     """Redirect to the auth blueprint's request-access route"""
+    # For GET requests, render the template directly
+    if request.method == 'GET':
+        return render_template('request_access.html', email='')
+    
+    # For POST requests, redirect to auth blueprint's endpoint
     return redirect(url_for('auth.request_access'))
 
 if __name__ == '__main__':
@@ -2002,6 +2007,7 @@ if __name__ == '__main__':
                     <i class="fas fa-user"></i>
                 </div>
                 <span>limited access</span>
+                <a href="{{ url_for('auth.login') }}" style="margin-right: 8px;">login</a>
                 <a href="{{ url_for('request_access_redirect') }}">request access</a>
             {% endif %}
             <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode">
@@ -2241,9 +2247,10 @@ if __name__ == '__main__':
                     </form>
                 {% endif %}
             {% else %}
-                <p style="margin-bottom: 20px;">You need to <a href="{{ url_for('request_access_redirect') }}" style="color: var(--accent-color);">request access</a> to add briefs.</p>
+                <p style="margin-bottom: 20px;">You need to <a href="{{ url_for('auth.login') }}" style="color: var(--accent-color);">login</a> or <a href="{{ url_for('request_access_redirect') }}" style="color: var(--accent-color);">request access</a> to add briefs.</p>
                 <div class="modal-buttons">
                     <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">close</button>
+                    <a href="{{ url_for('auth.login') }}" class="modal-button submit-button" style="display: inline-block; text-align: center; text-decoration: none; margin-right: 10px;">login</a>
                     <a href="{{ url_for('request_access_redirect') }}" class="modal-button submit-button" style="display: inline-block; text-align: center; text-decoration: none;">request access</a>
                 </div>
             {% endif %}
