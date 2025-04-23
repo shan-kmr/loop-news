@@ -1,0 +1,1061 @@
+#!/usr/bin/env python3
+"""
+News Timeline Web Application
+
+A Flask-based web app that provides a UI for searching news articles and
+displaying them in a timeline view, sorted by recency.
+"""
+
+from flask import Flask, render_template, request, redirect, url_for, jsonify, session
+from flask_login import LoginManager, login_required, current_user
+import os
+import re
+import json
+import string
+import time
+from collections import defaultdict
+from datetime import datetime, timedelta
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import threading
+import queue
+
+# Import configuration and models
+from config import *
+from models import User
+from auth import auth_bp, init_oauth
+from brave_news_api import BraveNewsAPI
+
+# Add dependencies for OpenAI
+try:
+    import openai
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    print("OpenAI package not available. To enable OpenAI summaries run:")
+    print("pip install openai")
+    OPENAI_AVAILABLE = False
+
+# Initialize Flask app
+app = Flask(__name__)
+app.config.from_object('config')
+
+# Register auth blueprint
+app.register_blueprint(auth_bp, url_prefix='/auth')
+
+# Set up Flask-Login
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'auth.login'  # Redirect to login when login_required
+
+# Initialize OAuth
+init_oauth(app)
+
+# Create templates directory if it doesn't exist
+os.makedirs('templates', exist_ok=True)
+
+# Create the Brave News API client
+brave_api = None
+
+@login_manager.user_loader
+def load_user(user_id):
+    """Load user from storage for Flask-Login"""
+    return User.get(user_id)
+
+def init_models():
+    """Initialize the models based on provider configuration"""
+    if MODEL_PROVIDER == "openai" and OPENAI_AVAILABLE:
+        init_openai()
+    else:
+        print(f"Warning: Selected model provider '{MODEL_PROVIDER}' is not available or invalid.")
+
+def init_openai():
+    """Initialize the OpenAI client"""
+    if not OPENAI_AVAILABLE:
+        return
+    
+    try:
+        # Set the API key
+        openai.api_key = OPENAI_API_KEY
+        print("OpenAI client initialized successfully")
+    except Exception as e:
+        print(f"Error initializing OpenAI client: {str(e)}")
+
+def summarize_daily_news(day_articles, query):
+    """Generate a summary of articles for a specific day using the configured model"""
+    if MODEL_PROVIDER == "openai":
+        return summarize_daily_news_openai(day_articles, query)
+    else:
+        return None
+
+def summarize_daily_news_openai(day_articles, query):
+    """Generate a summary of articles for a specific day using OpenAI's API"""
+    if not OPENAI_AVAILABLE:
+        return None
+    
+    try:
+        # Prepare content to summarize
+        article_texts = []
+        for article in day_articles:
+            title = article.get('title', '')
+            desc = article.get('description', '')
+            source = article.get('meta_url', {}).get('netloc', 'Unknown source')
+            article_texts.append(f"- {title}: {desc} (Source: {source})")
+        
+        all_articles_text = "\n".join(article_texts[:15])  # Limit to 15 articles to avoid token overflow
+        
+        # Create messages for the OpenAI API
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant that creates concise news summaries. Summarize the key events and topics from these news articles in about 2-3 sentences without adding any new information. Focus on identifying the main developments and common themes. Start directly with the summary content - do not use phrases like 'Here is the summary' or 'The main news is'."},
+            {"role": "user", "content": f"Here are news articles about \"{query}\" from the same day:\n\n{all_articles_text}\n\nPlease provide a brief summary of the main news for this day."}
+        ]
+        
+        # Create a client instance
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        
+        # Call the OpenAI API
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=150,
+            top_p=0.9
+        )
+        
+        # Extract the summary from the response
+        summary = response.choices[0].message.content.strip()
+        return summary
+    except Exception as e:
+        print(f"Error generating summary with OpenAI: {str(e)}")
+        return None
+
+# Load search history from JSON file
+def load_search_history():
+    history_file = get_history_file()
+    if os.path.exists(history_file):
+        try:
+            with open(history_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading history: {e}")
+    return {}
+
+# Save search history to JSON file
+def save_search_history(history):
+    history_file = get_history_file()
+    try:
+        # Ensure the directory exists if the path contains a directory
+        dir_name = os.path.dirname(history_file)
+        if dir_name:  # Only try to create directory if there is one
+            os.makedirs(dir_name, exist_ok=True)
+        with open(history_file, 'w') as f:
+            json.dump(history, f)
+    except Exception as e:
+        print(f"Error saving history: {e}")
+
+# Get search history file path
+def get_history_file():
+    if current_user.is_authenticated:
+        history_file = current_user.get_history_file()
+        if history_file:  # Check that we got a valid path
+            return history_file
+    
+    # Default location for anonymous users or if user path is invalid
+    default_dir = 'user_data/anonymous'
+    os.makedirs(default_dir, exist_ok=True)
+    return os.path.join(default_dir, 'search_history.json')
+
+def update_current_day_results(query, count, freshness, old_results):
+    """
+    Refresh all articles from the last search date to the current date,
+    filling in any gap periods in between.
+    
+    Args:
+        query: The search query
+        count: Number of results to fetch
+        freshness: Freshness parameter for the API
+        old_results: Previous search results
+        
+    Returns:
+        Updated results dictionary with refreshed current day articles and a list of days with new content
+    """
+    global brave_api
+    
+    if brave_api is None:
+        brave_api_key = app.config.get("BRAVE_API_KEY")
+        if not brave_api_key:
+            return old_results, []
+        brave_api = BraveNewsAPI(api_key=brave_api_key)
+    
+    try:
+        # For frequent refreshes (every 60 minutes), default to past day
+        # For longer term refreshes, use the original freshness or at least past week
+        refresh_freshness = 'pd'  # Default to past day for 60-minute refreshes
+        
+        # If the original freshness was longer (pw, pm, py), keep that for non-frequent refreshes
+        if freshness in ['pw', 'pm', 'py'] and CACHE_VALIDITY_HOURS > 24:
+            refresh_freshness = freshness  # Keep original longer freshness for non-frequent refreshes
+        
+        print(f"Using freshness '{refresh_freshness}' for refreshing '{query}' (original: {freshness})")
+        
+        # Get fresh results
+        fresh_results = brave_api.search_news(
+            query=query,
+            count=max(count * 2, 50),  # Get more results to ensure gap coverage
+            freshness=refresh_freshness
+        )
+        
+        if not fresh_results or 'results' not in fresh_results or not old_results or 'results' not in old_results:
+            return fresh_results or old_results, []
+        
+        # Get new and old articles
+        new_articles = fresh_results['results']
+        old_articles = old_results['results']
+        
+        # Find the age of the oldest "recent" article from the original search
+        # We'll keep articles older than this and replace everything newer
+        oldest_recent_age_seconds = float('inf')
+        
+        # Determine what timeframe we're replacing based on the freshness parameter
+        cutoff_seconds = {
+            'pd': 86400,        # 1 day
+            'pw': 604800,       # 1 week
+            'pm': 2592000,      # 1 month 
+            'py': 31536000,     # 1 year
+            'h': 3600           # 1 hour (fallback)
+        }.get(refresh_freshness, 604800)  # Default to 1 week if unknown
+        
+        # Categorize old articles
+        articles_to_keep = []
+        existing_articles_in_window = []
+        
+        for article in old_articles:
+            age_seconds = extract_age_in_seconds(article)
+            
+            # Keep very old articles (older than our refresh window)
+            if age_seconds > cutoff_seconds:
+                articles_to_keep.append(article)
+            else:
+                # Keep track of articles within the refresh window (we'll keep these too)
+                existing_articles_in_window.append(article)
+        
+        # Log what we're doing
+        print(f"Refreshing articles for '{query}' using freshness: {refresh_freshness}")
+        print(f"Keeping {len(articles_to_keep)} older articles beyond the refresh window")
+        print(f"Looking for new articles to add to {len(existing_articles_in_window)} existing articles within the window")
+        
+        # Combine older articles with fresh results
+        # De-duplicate articles by URL to prevent duplicates
+        seen_urls = set()
+        combined_articles = []
+        
+        # Track which days have new articles added (for summary regeneration)
+        days_with_new_articles = set()
+        
+        # First add all existing articles in window (preserve what we've already shown)
+        for article in existing_articles_in_window:
+            url = article.get('url', '')
+            if url:
+                seen_urls.add(url)
+                combined_articles.append(article)
+        
+        # Then add new articles that aren't already present
+        new_articles_added = 0
+        for article in new_articles:
+            url = article.get('url', '')
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                combined_articles.append(article)
+                new_articles_added += 1
+                
+                # Track which day this article belongs to for summary regeneration
+                day_group = day_group_filter(article)
+                days_with_new_articles.add(day_group)
+        
+        # Finally add the older articles
+        for article in articles_to_keep:
+            url = article.get('url', '')
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                combined_articles.append(article)
+        
+        print(f"Added {new_articles_added} new unique articles to the results")
+        if days_with_new_articles:
+            print(f"Days with new content (will regenerate summaries): {', '.join(days_with_new_articles)}")
+        
+        # Create updated results
+        updated_results = fresh_results.copy()
+        updated_results['results'] = combined_articles
+        
+        return updated_results, list(days_with_new_articles)
+    
+    except Exception as e:
+        print(f"Error updating results: {str(e)}")
+        return old_results, []
+
+def collect_day_summaries(history):
+    """Collect latest day (Today) summaries from history entries for display on the home page."""
+    latest_summaries = {}
+    
+    # Priority order of days, with "Today" being highest priority
+    day_priority = {
+        "Today": 1,
+        "Yesterday": 2,
+        "2 days ago": 3,
+        "3 days ago": 4,
+        "4 days ago": 5,
+        "5 days ago": 6,
+        "6 days ago": 7,
+        "1 week ago": 8,
+        "2 weeks ago": 9,
+        "1 month ago": 10
+    }
+    
+    for key, entry in history.items():
+        query = entry.get('query', '')
+        if not query:
+            continue
+            
+        if 'day_summaries' in entry and entry['day_summaries']:
+            best_day = None
+            best_priority = float('inf')
+            best_summary = None
+            
+            # Find the most recent day with a valid summary
+            for day, summary in entry['day_summaries'].items():
+                if is_valid_summary(summary):
+                    priority = day_priority.get(day, 999)  # Default to low priority if not in our list
+                    if priority < best_priority:
+                        best_priority = priority
+                        best_day = day
+                        best_summary = summary
+            
+            # If we found a valid summary, store it
+            if best_day and best_summary:
+                summary_key = f"{best_day}_{query}"
+                latest_summaries[summary_key] = {
+                    'query': query,
+                    'day': best_day,
+                    'summary': best_summary,
+                }
+    
+    return latest_summaries
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    """Main route that handles both the search form and displaying results."""
+    global brave_api
+    
+    # Initialize the API client if needed
+    if brave_api is None:
+        brave_api_key = app.config.get("BRAVE_API_KEY")
+        if not brave_api_key:
+            return render_template('error.html', 
+                                  error="BRAVE_API_KEY environment variable or config not set. Please set it and restart the app.",
+                                  user=current_user)
+        brave_api = BraveNewsAPI(api_key=brave_api_key)
+    
+    # Default query and results
+    query = request.args.get('query', 'breaking news')
+    results = None
+    search_time = None
+    error = None
+    sorted_articles = []
+    topic_groups = []
+    history = load_search_history()
+    
+    # History and timing handling
+    sorted_history = sorted(history.values(), key=lambda entry: entry.get('search_time', 0), reverse=True)
+    
+    # Format history timestamps for display
+    for entry in sorted_history:
+        if 'search_time' in entry:
+            entry['formatted_time'] = datetime.fromtimestamp(entry['search_time']).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Collect day summaries regardless of request method
+    day_summaries = collect_day_summaries(history)
+    print(f"Collected {len(day_summaries)} day summaries for home page display")
+    
+    # Debug each summary
+    for key, summary in day_summaries.items():
+        print(f"Home page summary for '{summary['query']}' on {summary['day']}: {summary['summary'][:50]}...")
+    
+    # Process form submission
+    if request.method == 'POST' and current_user.is_authenticated:
+        query = request.form.get('query', '').strip()
+        count = int(request.form.get('count', 10))
+        freshness = request.form.get('freshness', 'pw')
+        similarity_threshold = float(request.form.get('similarity_threshold', 0.3))
+        force_refresh = request.form.get('force_refresh') == 'true'
+        
+        # Check if user has reached the limit of 3 topics
+        unique_queries = set()
+        for entry in history.values():
+            if 'query' in entry:
+                unique_queries.add(entry['query'])
+        
+        if len(unique_queries) >= 3 and query not in unique_queries:
+            error = "You've reached the maximum of 3 briefs. Please remove one before adding another."
+        elif query:
+            # Check if we already have cached results that are still valid
+            cache_key = f"{query}_{count}_{freshness}"
+            cached_entry = history.get(cache_key)
+            use_cache = False
+            needs_day_refresh = False
+            
+            if cached_entry and not force_refresh:
+                # Store current time for comparison, ensuring naive datetime (no timezone)
+                now = datetime.now()
+                
+                try:
+                    # Parse the cached timestamp and ensure it's naive (no timezone)
+                    cached_time_str = cached_entry['timestamp']
+                    cached_time = datetime.fromisoformat(cached_time_str)
+                    # Remove timezone if present
+                    if hasattr(cached_time, 'tzinfo') and cached_time.tzinfo is not None:
+                        cached_time = cached_time.replace(tzinfo=None)
+                    
+                    # Calculate time difference
+                    time_diff = now - cached_time
+                    
+                    # Use cache if it's less than CACHE_VALIDITY_HOURS old
+                    if time_diff.total_seconds() < CACHE_VALIDITY_HOURS * 3600:
+                        use_cache = True
+                        
+                        # Check if we need to refresh the current day's results (older than 60 minutes)
+                        if time_diff.total_seconds() > 3600:  # 60 minutes in seconds
+                            needs_day_refresh = True
+                        
+                        results = cached_entry['results']
+                        search_time = cached_time
+                        
+                        # Check if we have cached summaries
+                        if 'day_summaries' in cached_entry:
+                            day_summaries = cached_entry['day_summaries']
+                        else:
+                            day_summaries = {}
+                        
+                        # If we need to refresh current day results
+                        if needs_day_refresh:
+                            print(f"Search is {int(time_diff.total_seconds() / 60)} minutes old. Refreshing current day results for '{query}'")
+                            updated_results, days_with_new_articles = update_current_day_results(query, count, freshness, results)
+                            
+                            if updated_results != results:
+                                results = updated_results
+                                search_time = datetime.now()
+                                
+                                # If we have days with new articles, clear their summaries to force regeneration
+                                if days_with_new_articles and 'day_summaries' in cached_entry:
+                                    print(f"Clearing summaries for days with new content: {', '.join(days_with_new_articles)}")
+                                    for day in days_with_new_articles:
+                                        if day in cached_entry['day_summaries']:
+                                            cached_entry['day_summaries'][day] = None
+                                
+                                # Update the cache with refreshed results
+                                cached_entry['results'] = results
+                                cached_entry['timestamp'] = search_time.isoformat()
+                                history[cache_key] = cached_entry
+                                save_search_history(history)
+                        else:
+                            print(f"Using cached results for '{query}' from {cached_time}, {int(time_diff.total_seconds() / 60)} minutes old")
+                        
+                        # Extract articles and sort them
+                        if results and 'results' in results:
+                            sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
+                            topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, query, day_summaries)
+                            
+                            # Ensure we have a Today summary, force generation if needed
+                            if 'Today' not in day_summaries or not is_valid_summary(day_summaries.get('Today')):
+                                # Find today's articles
+                                today_articles = [a for a in sorted_articles if day_group_filter(a) == 'Today']
+                                if today_articles:
+                                    print(f"Force generating Today's summary for cached results '{query}'")
+                                    today_summary = summarize_daily_news(today_articles, query)
+                                    if is_valid_summary(today_summary):
+                                        day_summaries['Today'] = today_summary
+                                        cached_entry['day_summaries'] = day_summaries
+                                        save_search_history(history)
+                                        print(f"Successfully added Today's summary to cache: {today_summary[:50]}...")
+                except Exception as e:
+                    print(f"Error parsing cached timestamp: {e}")
+                    use_cache = False
+            
+            # Make a new API call if we don't have valid cached results
+            if not use_cache:
+                try:
+                    print(f"Making new API call for '{query}'")
+                    # Search for news
+                    results = brave_api.search_news(
+                        query=query,
+                        count=count,
+                        freshness=freshness
+                    )
+                    search_time = datetime.now()
+                    
+                    # Sort articles by age (newest first)
+                    if results and 'results' in results:
+                        sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
+                        
+                        # Generate topic groups and summaries
+                        day_summaries = {}
+                        topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, query, day_summaries)
+                        
+                        # Ensure we have a Today summary, force generation if needed
+                        if 'Today' not in day_summaries or not is_valid_summary(day_summaries.get('Today')):
+                            # Find today's articles
+                            today_articles = [a for a in sorted_articles if day_group_filter(a) == 'Today']
+                            if today_articles:
+                                print(f"Force generating Today's summary for '{query}'")
+                                today_summary = summarize_daily_news(today_articles, query)
+                                if is_valid_summary(today_summary):
+                                    day_summaries['Today'] = today_summary
+                                    print(f"Successfully added Today's summary: {today_summary[:50]}...")
+                        
+                        # Cache the results with summaries
+                        cache_key = f"{query}_{count}_{freshness}"
+                        history[cache_key] = {
+                            'query': query,
+                            'count': count,
+                            'freshness': freshness,
+                            'timestamp': search_time.isoformat(),
+                            'results': results,
+                            'day_summaries': day_summaries
+                        }
+                        save_search_history(history)
+                        print(f"Cached new results for query: '{query}' with {len(day_summaries)} summaries")
+                except Exception as e:
+                    error = f"Error searching for news: {str(e)}"
+    
+    # Get list of history entries for sidebar
+    history_entries = []
+    for key, entry in history.items():
+        history_entries.append({
+            'query': entry['query'],
+            'timestamp': entry['timestamp'],
+            'key': key
+        })
+    
+    # Sort history by most recent first
+    history_entries.sort(key=lambda x: x['timestamp'], reverse=True)
+    
+    return render_template('index.html', 
+                          query=query,
+                          results=results, 
+                          search_time=search_time,
+                          history_entries=history_entries,
+                          error=error,
+                          topic_groups=topic_groups,
+                          day_summaries=day_summaries,
+                          history=history,
+                          active_tab="search",
+                          user=current_user)
+
+@app.route('/history', methods=['GET'])
+def history():
+    """View to display search history with the latest search."""
+    history = load_search_history()
+    
+    # If there are history entries, redirect to the most recent one
+    history_entries = []
+    for key, entry in history.items():
+        history_entries.append({
+            'query': entry['query'],
+            'timestamp': entry['timestamp'],
+            'key': key
+        })
+    
+    # Sort history by most recent first
+    history_entries.sort(key=lambda x: x['timestamp'], reverse=True)
+    
+    if history_entries:
+        # Redirect to the most recent search
+        latest_query = history_entries[0]['query']
+        return redirect(url_for('history_item', query=latest_query))
+    else:
+        # No history yet, show empty history page
+        return render_template('index.html',
+                              query='',
+                              results=None,
+                              search_time=None,
+                              error=None,
+                              history_entries=history_entries,
+                              topic_groups=[],
+                              day_summaries={},
+                              active_tab="history",
+                              user=current_user)
+
+@app.route('/history/<path:query>', methods=['GET'])
+def history_item(query):
+    """View to display a specific history item."""
+    # Load history
+    history = load_search_history()
+    
+    # Debug information
+    print(f"Looking for history item with query: '{query}'")
+    
+    # Get list of history entries for sidebar
+    history_entries = []
+    for key, entry in history.items():
+        stored_query = entry['query']
+        history_entries.append({
+            'query': stored_query,
+            'timestamp': entry['timestamp'],
+            'key': key
+        })
+    
+    # Sort history by most recent first
+    history_entries.sort(key=lambda x: x['timestamp'], reverse=True)
+    
+    # Find the requested history item
+    results = None
+    search_time = None
+    topic_groups = []
+    current_query = ''
+    similarity_threshold = float(request.args.get('similarity_threshold', 0.3))
+    force_refresh = request.args.get('force_refresh') == 'true'
+    
+    # Try to find an exact match first
+    found = False
+    if query:
+        for key, entry in history.items():
+            stored_query = entry['query']
+            
+            # Check for exact match
+            if stored_query == query:
+                print(f"Found exact match for query: '{query}'")
+                found = True
+                # Process the found entry
+                current_query = query
+                cached_time = datetime.fromisoformat(entry['timestamp'])
+                time_diff = datetime.now() - cached_time
+                results = entry['results']
+                search_time = cached_time
+                count = entry.get('count', 10)
+                freshness = entry.get('freshness', 'pw')
+                
+                # Check if we need to refresh - only if forced or if it's very old (> 1 hour)
+                needs_day_refresh = force_refresh or time_diff.total_seconds() > 3600  # 1 hour in seconds
+                
+                # Handle refreshing and processing
+                if needs_day_refresh:
+                    print(f"History item is {int(time_diff.total_seconds() / 60)} minutes old. Refreshing current day results for '{query}'")
+                    updated_results, days_with_new_articles = update_current_day_results(query, count, freshness, results)
+                    
+                    if updated_results != results:
+                        results = updated_results
+                        search_time = datetime.now()
+                        
+                        # If we have days with new articles, clear their summaries to force regeneration
+                        if days_with_new_articles and 'day_summaries' in entry:
+                            print(f"Clearing summaries for days with new content: {', '.join(days_with_new_articles)}")
+                            for day in days_with_new_articles:
+                                if day in entry['day_summaries']:
+                                    entry['day_summaries'][day] = None
+                        
+                        # Update the cache with refreshed results
+                        entry['results'] = results
+                        entry['timestamp'] = search_time.isoformat()
+                        save_search_history(history)
+                else:
+                    print(f"Using cached results for '{query}' from {cached_time}, {int(time_diff.total_seconds() / 60)} minutes old")
+                
+                # Process day summaries
+                day_summaries = entry.get('day_summaries', {})
+                if day_summaries is None:
+                    day_summaries = {}
+                
+                # Validate each summary to ensure we don't have invalid entries
+                valid_summaries = 0
+                for day, summary in list(day_summaries.items()):
+                    if is_valid_summary(summary):
+                        valid_summaries += 1
+                    else:
+                        # Clear invalid summaries so they'll be regenerated
+                        day_summaries[day] = None
+                
+                print(f"Found {valid_summaries} valid day summaries out of {len(day_summaries)} total in cache")
+                
+                # Process articles
+                if results and 'results' in results:
+                    sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
+                    # Pass existing day summaries to avoid regenerating summaries
+                    topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, current_query, day_summaries)
+                    
+                    # Save the updated day_summaries back to the entry to ensure they're stored in the cache
+                    # This is important for ensuring summaries persist between page visits
+                    if 'day_summaries' not in entry or entry['day_summaries'] != day_summaries:
+                        entry['day_summaries'] = day_summaries
+                        save_search_history(history)
+                        print(f"Saved {len(day_summaries)} day summaries to cache for query: '{query}'")
+                    
+                    # Check if we need to update summaries in history (redundant now but kept for safety)
+                    summary_changed = False
+                    for topic in topic_groups:
+                        day = topic['day_group']
+                        if day in day_summaries and day_summaries[day] != topic.get('day_summary') and is_valid_summary(topic.get('day_summary')):
+                            summary_changed = True
+                            day_summaries[day] = topic.get('day_summary')
+                    
+                    if summary_changed:
+                        entry['day_summaries'] = day_summaries
+                        save_search_history(history)
+                        print(f"Updated cache with new summaries for query: '{query}'")
+                
+                break
+    
+    # If no exact match was found, perform a new search
+    if not found:
+        print(f"No exact match found for query: '{query}'. Performing new search.")
+        try:
+            # Initialize API if needed
+            global brave_api
+            if brave_api is None:
+                brave_api_key = app.config.get("BRAVE_API_KEY")
+                if brave_api_key:
+                    brave_api = BraveNewsAPI(api_key=brave_api_key)
+                else:
+                    return render_template('error.html', error="BRAVE_API_KEY not set", user=current_user)
+            
+            # Default values
+            count = 10
+            freshness = 'pw'
+            
+            # Make a new API call
+            print(f"Making new API call for '{query}'")
+            results = brave_api.search_news(
+                query=query,
+                count=count,
+                freshness=freshness
+            )
+            search_time = datetime.now()
+            current_query = query
+            
+            # Process results
+            if results and 'results' in results:
+                sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
+                day_summaries = {}
+                topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, query, day_summaries)
+                
+                # Cache the results
+                cache_key = f"{query}_{count}_{freshness}"
+                history[cache_key] = {
+                    'query': query,
+                    'count': count,
+                    'freshness': freshness,
+                    'timestamp': search_time.isoformat(),
+                    'results': results,
+                    'day_summaries': day_summaries
+                }
+                save_search_history(history)
+                print(f"Cached new results for query: '{query}' with {len(day_summaries)} summaries")
+        except Exception as e:
+            print(f"Error performing search: {str(e)}")
+    
+    # Ensure we always have a search_time for the ticker to work
+    if search_time is None:
+        search_time = datetime.now()
+    
+    return render_template('index.html', 
+                          query=current_query, 
+                          results=results, 
+                          search_time=search_time,
+                          error=None,
+                          history_entries=history_entries,
+                          topic_groups=topic_groups,
+                          day_summaries=day_summaries,
+                          history=history,
+                          active_tab="history",
+                          user=current_user)
+
+@app.route('/api/delete_history/<path:query>', methods=['POST'])
+@login_required
+def delete_history_item(query):
+    """API endpoint to delete a history item."""
+    history = load_search_history()
+    
+    # Find and remove the history item
+    items_to_remove = []
+    for key, entry in history.items():
+        if entry['query'] == query:
+            items_to_remove.append(key)
+    
+    for key in items_to_remove:
+        history.pop(key, None)
+    
+    save_search_history(history)
+    
+    return jsonify({'success': True})
+
+@app.route('/api/clear_history', methods=['POST'])
+@login_required
+def clear_history():
+    """API endpoint to clear all history."""
+    save_search_history({})
+    return jsonify({'success': True})
+
+def clean_text(text):
+    """Clean and preprocess text for similarity comparison."""
+    if not text:
+        return ""
+    # Convert to lowercase and remove punctuation
+    text = text.lower()
+    text = re.sub(f'[{re.escape(string.punctuation)}]', ' ', text)
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def is_valid_summary(summary):
+    """Check if a summary exists and is valid."""
+    if summary is None:
+        return False
+    if not isinstance(summary, str):
+        return False
+    if len(summary.strip()) == 0:
+        return False
+    return True
+
+def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_summaries=None):
+    """
+    Group articles into topics based on content similarity.
+    
+    Args:
+        articles: List of news articles
+        similarity_threshold: Threshold for considering articles as similar (0-1)
+        query: The search query used (for summarization)
+        day_summaries: Dictionary of existing summaries by day
+        
+    Returns:
+        List of topic groups, each containing related articles
+    """
+    if not articles:
+        return []
+    
+    # Initialize day_summaries if not provided
+    if day_summaries is None:
+        day_summaries = {}
+    
+    # Extract title and description for content comparison
+    article_contents = []
+    for article in articles:
+        title = article.get('title', '')
+        desc = article.get('description', '')
+        content = f"{title} {desc}"
+        article_contents.append(clean_text(content))
+    
+    # Compute TF-IDF vectorization
+    try:
+        vectorizer = TfidfVectorizer(min_df=1, stop_words='english')
+        tfidf_matrix = vectorizer.fit_transform(article_contents)
+        
+        # Compute cosine similarity
+        similarity_matrix = cosine_similarity(tfidf_matrix)
+        
+        # Group articles based on similarity
+        visited = [False] * len(articles)
+        topic_groups = []
+        
+        for i in range(len(articles)):
+            if visited[i]:
+                continue
+                
+            visited[i] = True
+            group = [articles[i]]
+            
+            # Find similar articles
+            for j in range(i+1, len(articles)):
+                if not visited[j] and similarity_matrix[i, j] >= similarity_threshold:
+                    group.append(articles[j])
+                    visited[j] = True
+            
+            # Only add groups with more than one article
+            if len(group) > 1:
+                # Sort group by age
+                group = sorted(group, key=extract_age_in_seconds)
+                
+                # Generate a topic title from the newest article
+                newest_article = group[0]
+                topic_title = newest_article.get('title', 'Untitled Topic')
+                
+                topic_groups.append({
+                    'title': topic_title,
+                    'articles': group,
+                    'count': len(group),
+                    'newest_age': newest_article.get('age', 'Unknown'),
+                    'day_group': day_group_filter(newest_article)
+                })
+            else:
+                # Add as a single article topic
+                topic_groups.append({
+                    'title': group[0].get('title', 'Untitled Topic'),
+                    'articles': group,
+                    'count': 1,
+                    'newest_age': group[0].get('age', 'Unknown'),
+                    'day_group': day_group_filter(group[0])
+                })
+        
+        # Sort the topic groups by the age of their newest article
+        topic_groups = sorted(topic_groups, key=lambda x: extract_age_in_seconds(x['articles'][0]))
+        
+        # Track days that need summaries
+        days_needing_summaries = set()
+        
+        # Add existing summaries to topic groups first 
+        for topic in topic_groups:
+            day = topic['day_group']
+            # Check if we already have a valid summary for this day
+            existing_summary = day_summaries.get(day)
+            topic['day_summary'] = existing_summary
+            
+            if not is_valid_summary(existing_summary):
+                if day not in days_needing_summaries:
+                    days_needing_summaries.add(day)
+            else:
+                print(f"Using existing summary for day: {day}")
+        
+        # Only generate new summaries if needed and if models are available
+        if days_needing_summaries and ((MODEL_PROVIDER == "llama" and LLAMA_AVAILABLE and llama_model is not None) or 
+                                       (MODEL_PROVIDER == "openai" and OPENAI_AVAILABLE)):
+            # Group articles by day, but only for days that need new summaries
+            day_articles = {}
+            for topic in topic_groups:
+                day = topic['day_group']
+                if day in days_needing_summaries:
+                    if day not in day_articles:
+                        day_articles[day] = []
+                    day_articles[day].extend(topic['articles'])
+            
+            # Generate summaries only for days that need them
+            for day, day_art in day_articles.items():
+                # Skip days that have valid summaries (this is an additional safeguard)
+                if day in day_summaries and is_valid_summary(day_summaries[day]):
+                    print(f"Skipping summary generation for day: {day} (already valid)")
+                    continue
+                    
+                print(f"Generating new summary for day: {day} using {MODEL_PROVIDER}")
+                summary = summarize_daily_news(day_art, query)
+                
+                # Only update if we got a valid summary
+                if is_valid_summary(summary):
+                    print(f"Successfully generated summary for {day}: {summary[:50]}...")
+                    day_summaries[day] = summary
+                    
+                    # Update topic groups with new summaries
+                    for topic in topic_groups:
+                        if topic['day_group'] == day:
+                            topic['day_summary'] = summary
+                    
+                    # This code was moved out of the loop to avoid excessive summary generation
+                    # We now directly save the summaries as they're generated
+                    try:
+                        # Try to find the history entry for this query and update it
+                        history = load_search_history()
+                        for key, entry in history.items():
+                            if entry.get('query') == query:
+                                entry['day_summaries'] = day_summaries
+                                save_search_history(history)
+                                print(f"Immediately saved new {day} summary to history for {query}")
+                                break
+                    except Exception as e:
+                        print(f"Error saving summary to history: {e}")
+                else:
+                    print(f"Failed to generate valid summary for day: {day}")
+        
+        # Count how many topics have summaries 
+        topics_with_summaries = 0
+        for topic in topic_groups:
+            if is_valid_summary(topic.get('day_summary')):
+                topics_with_summaries += 1
+                
+        print(f"Grouped {len(topic_groups)} topics, {topics_with_summaries} have summaries. Day summaries dict has {len(day_summaries)} entries.")
+        
+        return topic_groups
+    
+    except Exception as e:
+        print(f"Error grouping articles: {str(e)}")
+        # Fallback: return each article as its own group if clustering fails
+        return [{'title': a.get('title', 'Untitled'), 'articles': [a], 'count': 1, 
+                 'newest_age': a.get('age', 'Unknown'), 'day_group': day_group_filter(a)} 
+                for a in articles]
+
+# Function to extract age in seconds for sorting
+def extract_age_in_seconds(article):
+    """Convert age strings to seconds for sorting"""
+    age = article.get("age", "Unknown")
+    
+    # Try to extract time information from the age string
+    if isinstance(age, str):
+        # Handle common formats like "2 hours ago", "1 day ago", etc.
+        if "minute" in age:
+            minutes = int(''.join(filter(str.isdigit, age)))
+            return minutes * 60
+        elif "hour" in age:
+            hours = int(''.join(filter(str.isdigit, age)))
+            return hours * 3600
+        elif "day" in age:
+            days = int(''.join(filter(str.isdigit, age)))
+            return days * 86400
+        elif "week" in age:
+            weeks = int(''.join(filter(str.isdigit, age)))
+            return weeks * 604800
+        elif "month" in age:
+            months = int(''.join(filter(str.isdigit, age)))
+            return months * 2592000
+    
+    # Default to a large number for unknown ages to place them at the end
+    return float('inf')
+
+# Template filter to get the day group for an article
+@app.template_filter('day_group')
+def day_group_filter(article):
+    """Get the day group for an article (Today, Yesterday, etc.)"""
+    age = article.get("age", "Unknown")
+    
+    # Extract the day for timeline grouping
+    day_str = "Today"
+    if "day" in age:
+        days = int(''.join(filter(str.isdigit, age)))
+        if days == 1:
+            day_str = "Yesterday"
+        else:
+            day_str = f"{days} days ago"
+    elif "week" in age or "month" in age:
+        day_str = age
+        
+    return day_str
+
+# Template filter to format dates
+@app.template_filter('format_datetime')
+def format_datetime_filter(value, format='%Y-%m-%d %H:%M'):
+    """Format a datetime object."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    return value.strftime(format)
+
+# Make the is_valid_summary function available in templates
+app.jinja_env.globals['is_valid_summary'] = is_valid_summary
+
+if __name__ == '__main__':
+    # Initialize models in background threads to avoid blocking app startup
+    if OPENAI_AVAILABLE:
+        init_thread = threading.Thread(target=init_models)
+        init_thread.daemon = True
+        init_thread.start()
+    
+    # Create user_data directory for user files
+    os.makedirs('user_data', exist_ok=True)
+    os.makedirs('templates', exist_ok=True)
+    
+    # Run the Flask app
+    print("Starting Flask application on http://0.0.0.0:5000")
+    print("NOTE: You need to install scikit-learn for the topic grouping to work:")
+    print("pip install scikit-learn")
+    print("NOTE: To enable OpenAI summaries, install:")
+    print("pip install openai")
+    print("NOTE: Set the following environment variables for Google authentication:")
+    print("export GOOGLE_CLIENT_ID=your_google_client_id")
+    print("export GOOGLE_CLIENT_SECRET=your_google_client_secret")
+    app.run(host='127.0.0.1', port=5000, debug=True) 
