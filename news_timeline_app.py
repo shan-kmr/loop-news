@@ -3250,12 +3250,8 @@ if __name__ == '__main__':
                         <h2>why i built this</h2>
                         <p>
                             my vision for a sharper informational edge. in an era where information abundance creates 
-                            its own form of scarcity—attention—the need for systems that respect cognitive degrees of freedom
-                            has never been more critical.
-                        </p>
-                        <p>
-                            as an observer of global systems, i sought what remains orthogonal to the commercial incentives
-                            of modern media: genuine insight, separated from the constant barrage of reactionary content.
+                            its own form of scarcity—attention—the need for systems that value sequential, contextual, 
+                            and verifiable information has never been more critical.
                         </p>
                     </div>
                     
@@ -3263,13 +3259,14 @@ if __name__ == '__main__':
                         <h2>beyond the feed</h2>
                         <p>
                             traditional news suffers from a fundamental reductionism—breaking complex narratives into
-                            disconnected fragments that destroy context and coherence. the scrolling feed, by design, 
-                            optimizes for engagement metrics orthogonal to understanding.
+                            disconnected fragments that destroy context and coherence.
                         </p>
                         <p>
                             loop challenges this paradigm by restoring the connections, presenting not isolated data points
-                            but complete trajectories—a temporal maps of events and their relationships across multiple
-                            dimensions of relevance.
+                            but complete trajectories—a temporal map of events and their relationships across multiple
+                            dimensions of relevance. loop tracks trends, entities, and relationships across time–notifying you of immediate changes.
+
+                            my coarse take on antireductionism as a 17-year old here.
                         </p>
                     </div>
                     
@@ -3278,41 +3275,13 @@ if __name__ == '__main__':
                         <p>
                             the information landscape now operates with its own mens rea—a system designed to capture attention
                             without the ethical framework to ensure integrity. it's a subtle crime of modern media: presenting
-                            partial truths as complete pictures. 
-                        </p>
-                        <p>
-                            loop serves as a corrective measure, applying computational rigor to restore the missing context.
-                            it establishes a framework where information can exist beyond the constraints of commercial imperatives
-                            and algorithmic biases.
+                            partial truths as complete pictures. loop serves as a corrective measure, applying computational rigor to restore missing context.
                         </p>
                     </div>
                     
-                    <div class="philosophy-section">
-                        <h2>first principles approach</h2>
-                        <p>
-                            where conventional AI systems accept surface-level reductionism of news into summaries,
-                            loop interrogates information along orthogonal dimensions: veracity, source credibility,
-                            contextual relevance, and historical continuity.
-                        </p>
-                        <p>
-                            this approach expands the degrees of freedom through which information can be processed and understood—
-                            moving beyond what is merely said to what it means within larger systems of knowledge and events.
-                        </p>
-                    </div>
+                    <!-- Removed "first principles approach" section -->
                     
-                    <div class="philosophy-section">
-                        <h2>personal mission</h2>
-                        <p>
-                            having worked across cultural and disciplinary boundaries, i've observed how information asymmetries
-                            create power imbalances that limit collective progress. loop represents my attempt to establish
-                            an intelligence commons—an equalization of informational power.
-                        </p>
-                        <p>
-                            it exists as a counterpoint to the mental mens rea of modern media ecosystems, 
-                            a space where the complete picture is valued above the fragmentary, and where deep understanding
-                            remains the non-negotiable standard for what constitutes actual news.
-                        </p>
-                    </div>
+                    <!-- Removed "personal mission" section -->
                 </div>
             {% endif %}
         </main>
