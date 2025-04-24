@@ -2069,6 +2069,80 @@ if __name__ == '__main__':
         [data-theme="dark"] .philosophy-section p {
             opacity: 0.85;
         }
+        
+        .notification-bell {
+            margin-left: 8px;
+            font-size: 14px;
+            color: var(--text-color);
+            opacity: 0.5;
+            cursor: pointer;
+            transition: opacity 0.2s ease;
+        }
+        
+        .notification-bell:hover {
+            opacity: 0.9;
+        }
+        
+        [data-theme="dark"] .notification-bell {
+            color: var(--text-color);
+            opacity: 0.4;
+        }
+        
+        [data-theme="dark"] .notification-bell:hover {
+            opacity: 0.8;
+        }
+        
+        .notification-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 10;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .notification-modal-content {
+            background-color: var(--card-bg);
+            width: 100%;
+            max-width: 400px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            position: relative;
+        }
+        
+        .notification-modal-title {
+            font-size: 20px;
+            margin-bottom: 15px;
+            color: var(--text-color);
+        }
+        
+        .notification-topic {
+            font-weight: bold;
+            color: var(--text-color);
+        }
+        
+        .notification-options {
+            margin: 20px 0;
+        }
+        
+        .notification-option {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .notification-option input {
+            margin-right: 10px;
+        }
+        
+        .notification-option label {
+            color: var(--text-color);
+        }
     </style>
 </head>
 <body>
@@ -2137,7 +2211,10 @@ if __name__ == '__main__':
                     {% for entry in history_entries %}
                         <div class="brief-card" onclick="window.location.href='/history/{{ entry.query }}'">
                             <div class="home-card-header">
-                                <div class="brief-title">{{ entry.query }}</div>
+                                <div class="brief-title">
+                                    {{ entry.query }}
+                                    <i class="fas fa-bell notification-bell" onclick="event.stopPropagation(); openNotificationModal('{{ entry.query }}')"></i>
+                                </div>
                                 <div class="card-right-elements">
                                     <div class="detail-link">
                                         detailed analysis <span class="arrow">→</span>
@@ -2434,6 +2511,30 @@ if __name__ == '__main__':
         </div>
     </div>
     
+    <!-- Modal for notification settings -->
+    <div id="notificationModal" class="notification-modal">
+        <div class="notification-modal-content">
+            <h2 class="notification-modal-title">notification settings</h2>
+            <p>set update frequency for <span id="notificationTopic" class="notification-topic"></span></p>
+            
+            <div class="notification-options">
+                <div class="notification-option">
+                    <input type="radio" id="notifyHourly" name="notifyFrequency" value="hourly">
+                    <label for="notifyHourly">hourly updates</label>
+                </div>
+                <div class="notification-option">
+                    <input type="radio" id="notifyDaily" name="notifyFrequency" value="daily" checked>
+                    <label for="notifyDaily">daily summary</label>
+                </div>
+            </div>
+            
+            <div class="modal-buttons">
+                <button type="button" class="modal-button cancel-button" onclick="closeNotificationModal()">cancel</button>
+                <button type="button" class="modal-button submit-button" onclick="saveNotificationSettings()">save settings</button>
+            </div>
+        </div>
+    </div>
+    
     <script>
         function toggleTopic(element) {
             const content = element.nextElementSibling;
@@ -2491,6 +2592,27 @@ if __name__ == '__main__':
         
         function closeRequestAccessModal() {
             document.getElementById('requestAccessModal').style.display = 'none';
+        }
+        
+        function closeNotificationModal() {
+            document.getElementById('notificationModal').style.display = 'none';
+        }
+        
+        function saveNotificationSettings() {
+            const topic = document.getElementById('notificationTopic').textContent;
+            const frequency = document.querySelector('input[name="notifyFrequency"]:checked').value;
+            
+            // Save preference to localStorage
+            localStorage.setItem(`notify_${topic}`, frequency);
+            
+            // You would typically send this to the server as well
+            console.log(`Saved notification preference for "${topic}": ${frequency}`);
+            
+            // Close the modal
+            closeNotificationModal();
+            
+            // Prevent navigation to the details page
+            event.stopPropagation();
         }
 
         let reloadTimer;
@@ -2557,11 +2679,16 @@ if __name__ == '__main__':
             window.onclick = function(event) {
                 const briefModal = document.getElementById('newBriefModal');
                 const accessModal = document.getElementById('requestAccessModal');
+                const notificationModal = document.getElementById('notificationModal');
+                
                 if (event.target == briefModal) {
                     closeNewBriefModal();
                 }
                 if (event.target == accessModal) {
                     closeRequestAccessModal();
+                }
+                if (event.target == notificationModal) {
+                    closeNotificationModal();
                 }
             }
             
@@ -2800,6 +2927,27 @@ if __name__ == '__main__':
             
             // Always do a full page reload
             window.location.href = url.toString();
+        }
+        
+        function openNotificationModal(topic) {
+            const modal = document.getElementById('notificationModal');
+            const topicElement = document.getElementById('notificationTopic');
+            
+            // Set the topic in the modal
+            topicElement.textContent = topic;
+            
+            // Check if we have saved preferences for this topic
+            const savedPrefs = localStorage.getItem(`notify_${topic}`);
+            if (savedPrefs) {
+                const frequency = savedPrefs;
+                document.querySelector(`input[name="notifyFrequency"][value="${frequency}"]`).checked = true;
+            } else {
+                // Default to daily
+                document.querySelector('input[name="notifyFrequency"][value="daily"]').checked = true;
+            }
+            
+            // Show the modal
+            modal.style.display = 'flex';
         }
     </script>
 </body>
