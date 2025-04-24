@@ -80,7 +80,6 @@ class BraveNewsAPI:
             "q": query,
             "count": min(count, 50),  # Ensure count doesn't exceed API limit
             "offset": min(offset, 9),  # Ensure offset doesn't exceed API limit
-            "country": country,
             "search_lang": search_lang,
             "ui_lang": ui_lang,
             "freshness": freshness,

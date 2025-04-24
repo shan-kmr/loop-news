@@ -1574,6 +1574,17 @@ def send_notification_email(topic, entry, frequency, recipient_email):
     summary_text = None
     summary_date = None
     
+    # Get current time in Eastern Time
+    eastern = pytz.timezone('US/Eastern')
+    now = datetime.now(eastern)
+    date_str = now.strftime('%b %d, %Y')
+    
+    # For daily summaries using yesterday's content, use yesterday's date
+    yesterday_date = None
+    if frequency == 'daily':
+        yesterday = now - timedelta(days=1)
+        yesterday_date = yesterday.strftime('%b %d, %Y')
+    
     if frequency == 'hourly':
         if 'Today' in day_summaries and is_valid_summary(day_summaries['Today']):
             summary_text = day_summaries['Today']
@@ -1604,15 +1615,15 @@ def send_notification_email(topic, entry, frequency, recipient_email):
     msg['From'] = "Loop News <noreply@loop-news.com>"
     msg['To'] = recipient_email
     
-    # Get current time in Eastern Time
-    eastern = pytz.timezone('US/Eastern')
-    now = datetime.now(eastern)
-    date_str = now.strftime('%b %d, %Y')
-    
     if frequency == 'hourly':
         msg['Subject'] = f"Hourly Update: {topic} - {date_str} EST"
     else:
         msg['Subject'] = f"Daily Summary: {topic} - {date_str} EST"
+    
+    # Determine which date to display in the email
+    email_date_str = date_str
+    if frequency == 'daily' and summary_date == 'Yesterday' and yesterday_date:
+        email_date_str = yesterday_date
     
     # Email body
     html = f"""
@@ -1622,7 +1633,7 @@ def send_notification_email(topic, entry, frequency, recipient_email):
         <h1 style="font-size: 24px; color: #333; margin-bottom: 20px;">loop: {topic}</h1>
         
         <div style="margin-bottom: 30px;">
-          <h2 style="font-size: 18px; color: #555; margin-bottom: 10px;">{summary_date}'s Summary ({date_str} EST)</h2>
+          <h2 style="font-size: 18px; color: #555; margin-bottom: 10px;">{summary_date}'s Summary ({email_date_str} EST)</h2>
           <p style="line-height: 1.6;">{summary_text}</p>
         </div>
         
