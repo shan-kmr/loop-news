@@ -3267,7 +3267,7 @@ if __name__ == '__main__':
                             dimensions of relevance. loop tracks trends, entities, and relationships across time–notifying you of immediate changes.
                         </p>
                         <p>
-                            my coarse take on antireductionism as a 17-year old <a href="https://docs.google.com/document/d/1GXAdOSCwvc_XALn1WTwRVDOdDcFC1lfeAx1WLTpyg9w/" target="_blank">here</a>.
+                            my coarse take on antireductionism as a 17-year old <a href="https://docs.google.com/document/d/1GXAdOSCwvc_XALn1WTwRVDOdDcFC1lfeAx1WLTpyg9w/" target="_blank" style="font-weight: bold; text-decoration: underline;">here</a>.
                         </p>
                     </div>
                     
