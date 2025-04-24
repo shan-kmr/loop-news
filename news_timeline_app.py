@@ -452,6 +452,10 @@ def index():
     """Main route that handles both the search form and displaying results."""
     global brave_api
     
+    # Redirect to raison d'etre page if not logged in
+    if not current_user.is_authenticated:
+        return redirect(url_for('raison_detre'))
+    
     # Initialize the API client if needed
     if brave_api is None:
         brave_api_key = app.config.get("BRAVE_API_KEY")
@@ -714,6 +718,10 @@ def index():
 @app.route('/history', methods=['GET'])
 def history():
     """View to display search history with the latest search."""
+    # Redirect to raison d'etre page if not logged in
+    if not current_user.is_authenticated:
+        return redirect(url_for('raison_detre'))
+        
     history = load_search_history()
     
     # If there are history entries, redirect to the most recent one
@@ -746,6 +754,7 @@ def history():
                               user=current_user)
 
 @app.route('/history/<path:query>', methods=['GET'])
+@login_required
 def history_item(query):
     """View to display a specific history item."""
     # Load history
@@ -794,12 +803,12 @@ def history_item(query):
                 count = entry.get('count', 10)
                 freshness = entry.get('freshness', 'pw')
                 
-                # Check if we need to refresh - only if forced or if it's very old (> 1 hour)
-                needs_day_refresh = force_refresh or time_diff.total_seconds() > 3600  # 1 hour in seconds
+                # Always refresh when a topic is clicked
+                needs_day_refresh = True  # Force refresh every time
                 
                 # Handle refreshing and processing
                 if needs_day_refresh:
-                    print(f"History item is {int(time_diff.total_seconds() / 60)} minutes old. Refreshing current day results for '{query}'")
+                    print(f"Refreshing results for '{query}'")
                     updated_results, days_with_new_articles = update_current_day_results(query, count, freshness, results)
                     
                     if updated_results != results:
@@ -812,11 +821,14 @@ def history_item(query):
                             for day in days_with_new_articles:
                                 if day in entry['day_summaries']:
                                     entry['day_summaries'][day] = None
-                        
-                        # Update the cache with refreshed results
-                        entry['results'] = results
-                        entry['timestamp'] = search_time.isoformat()
-                        save_search_history(history)
+                    else:
+                        # Even if results are the same, update the timestamp
+                        search_time = datetime.now()
+                    
+                    # Update the cache with refreshed results
+                    entry['results'] = results
+                    entry['timestamp'] = search_time.isoformat()
+                    save_search_history(history)
                 else:
                     print(f"Using cached results for '{query}' from {cached_time}, {int(time_diff.total_seconds() / 60)} minutes old")
                 
@@ -1258,7 +1270,26 @@ def raison_detre():
         history_entries=history_entries,
         history=history,
         query=None,
-        error=None
+        error=None,
+        philosophy_content={
+            'heading': 'Welcome to Loop',
+            'subheading': 'Track all moves in a single timeline',
+            'intro': 'Loop is a modern news tracking application designed to help you stay informed on topics that matter to you. It organizes news articles by topic and presents them in a chronological timeline for easy consumption.',
+            'sections': [
+                {
+                    'title': 'Why We Built This',
+                    'content': 'In today\'s fast-paced world, staying informed becomes increasingly difficult. Traditional news sources either overwhelm with information or miss critical context. Loop addresses this by focusing on specific topics you care about, organizing news chronologically, and providing AI-generated summaries to give you the big picture at a glance.'
+                },
+                {
+                    'title': 'How It Works',
+                    'content': 'Loop lets you track up to 3 topics simultaneously. For each topic, we gather the latest news, organize articles by day, and generate concise summaries. The timeline view shows you how stories evolve over time, helping you understand not just what happened, but how events unfolded and are connected.'
+                },
+                {
+                    'title': 'Limited Access Model',
+                    'content': 'We currently operate on an invitation-based model to ensure quality of service. If you\'d like to use Loop, please request access using the link in the navigation bar. We\'ll notify you when your account is approved.'
+                }
+            ]
+        }
     )
 
 def save_notification_settings(user_email, topic, frequency):
