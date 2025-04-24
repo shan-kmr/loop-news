@@ -1500,7 +1500,13 @@ def process_history_file(file_path, now, eastern, updated_files):
                 continue
             
             # Get last sent time for this recipient
-            last_sent_dict = notifications.get('last_sent', {})
+            last_sent_dict = notifications.get('last_sent')
+            
+            # Initialize last_sent_dict if it's None
+            if last_sent_dict is None:
+                last_sent_dict = {}
+                notifications['last_sent'] = last_sent_dict
+            
             last_sent_str = last_sent_dict.get(email)
             
             should_send = False
@@ -1551,12 +1557,18 @@ def process_history_file(file_path, now, eastern, updated_files):
 def send_notification_email(topic, entry, frequency, recipient_email):
     """Send notification email for a specific topic"""
     if not recipient_email:
+        print(f"Error: No recipient email provided")
         return False
+    
+    print(f"Preparing to send {frequency} notification email for topic '{topic}' to {recipient_email}")
     
     # Check if we have summaries
     day_summaries = entry.get('day_summaries', {})
     if not day_summaries:
+        print(f"Error: No day summaries available for topic '{topic}'")
         return False
+    
+    print(f"Available day summaries: {list(day_summaries.keys())}")
     
     # For hourly, use today's summary; for daily, use yesterday's
     summary_text = None
@@ -1566,20 +1578,25 @@ def send_notification_email(topic, entry, frequency, recipient_email):
         if 'Today' in day_summaries and is_valid_summary(day_summaries['Today']):
             summary_text = day_summaries['Today']
             summary_date = 'Today'
+            print(f"Using Today's summary for hourly notification")
     elif frequency == 'daily':
         if 'Yesterday' in day_summaries and is_valid_summary(day_summaries['Yesterday']):
             summary_text = day_summaries['Yesterday']
             summary_date = 'Yesterday'
+            print(f"Using Yesterday's summary for daily notification")
     
     # If no appropriate summary found, try other days
     if not summary_text:
+        print(f"No specific {frequency} summary found, looking for any valid summary")
         for day, summary in day_summaries.items():
             if is_valid_summary(summary):
                 summary_text = summary
                 summary_date = day
+                print(f"Using {day}'s summary instead")
                 break
     
     if not summary_text:
+        print(f"Error: No valid summary found for topic '{topic}'")
         return False
     
     # Create email
@@ -1637,28 +1654,37 @@ def send_notification_email(topic, entry, frequency, recipient_email):
             sender_email = "shantanu.kum97@gmail.com"  # Replace with a real email for production
             password = "gqgajschaboevchb"  # You would need to use an app password for Gmail
             
+            print(f"Connecting to SMTP server: {smtp_server}:{port}")
+            
             # Create a secure SSL context
             context = ssl.create_default_context()
             
             # Try to log in to server and send email
             server = smtplib.SMTP(smtp_server, port)
             server.ehlo()  # Can be omitted
+            print(f"Starting TLS connection")
             server.starttls(context=context)  # Secure the connection
             server.ehlo()  # Can be omitted
             
             # Send the email
+            print(f"Logging in as {sender_email}")
             server.login(sender_email, password)
+            print(f"Sending email to {recipient_email}")
             server.sendmail(sender_email, recipient_email, msg.as_string())
+            print(f"Email sent successfully, closing connection")
             server.quit()
             
             print(f"Email sent to {recipient_email} successfully")
+            return True
             
         except Exception as e:
             print(f"Error sending email: {e}")
+            traceback.print_exc()
             # Continue - we don't want to fail the notification process if email sending fails
     
     except Exception as e:
         print(f"Error preparing email: {e}")
+        traceback.print_exc()
         return False
     
     return True
@@ -1741,19 +1767,54 @@ def save_notification_api():
         return jsonify({'success': False, 'error': 'Not authenticated'})
     
     data = request.json
+    
+    if not data:
+        return jsonify({'success': False, 'error': 'No data provided'})
+    
     topic = data.get('topic')
     frequency = data.get('frequency')
     
-    if not topic or not frequency:
-        return jsonify({'success': False, 'error': 'Missing required fields'})
+    if not topic:
+        return jsonify({'success': False, 'error': 'Missing topic'})
+    
+    if not frequency:
+        return jsonify({'success': False, 'error': 'Missing frequency'})
+    
+    # Validate frequency value
+    if frequency not in ['hourly', 'daily']:
+        return jsonify({'success': False, 'error': 'Invalid frequency. Must be "hourly" or "daily"'})
     
     # Get the email - this could come from the request or use a hardcoded value
     # This can be expanded to handle multiple recipients
-    user_email = data.get('email', "shantanu.kum97@gmail.com")
+    user_email = data.get('email')
     
+    # If no email provided in the request, use the current user's email
+    if not user_email and current_user and hasattr(current_user, 'email'):
+        user_email = current_user.email
+    
+    # Fallback to hardcoded email if still no email
+    if not user_email:
+        user_email = "shantanu.kum97@gmail.com"
+    
+    # Try to save the notification settings
     success = save_notification_settings(user_email, topic, frequency)
     
-    return jsonify({'success': success})
+    # Check if the save was successful
+    if not success:
+        return jsonify({
+            'success': False, 
+            'error': f'Failed to save notification settings for topic "{topic}"',
+            'email': user_email,
+            'frequency': frequency
+        })
+    
+    return jsonify({
+        'success': True,
+        'message': f'Successfully saved {frequency} notifications for {topic}',
+        'email': user_email,
+        'topic': topic,
+        'frequency': frequency
+    })
 
 @app.route('/api/test-notification/<topic>/<frequency>', methods=['GET'])
 def test_notification(topic, frequency):
@@ -1852,26 +1913,59 @@ def debug_notifications():
     for file_path in all_history_files:
         file_result = {
             'file': file_path,
-            'topics': []
+            'topics': [],
+            'allEntries': [],  # New field to show all entries for debugging
+            'entryCount': 0
         }
         
         try:
             with open(file_path, 'r') as f:
                 history = json.load(f)
             
+            file_result['entryCount'] = len(history)
+            
+            # Add all entries for debugging
             for key, entry in history.items():
-                if 'notifications' in entry and 'recipients' in entry['notifications']:
-                    topic_info = {
-                        'topic': entry.get('query', 'Unknown'),
-                        'recipients': entry['notifications'].get('recipients', []),
-                        'last_sent': entry['notifications'].get('last_sent', {})
+                entry_info = {
+                    'key': key,
+                    'query': entry.get('query', 'Unknown'),
+                    'hasNotifications': 'notifications' in entry,
+                }
+                
+                # Check if notifications structure is valid
+                if 'notifications' in entry:
+                    notifications = entry['notifications']
+                    entry_info['notificationsStructure'] = {
+                        'hasRecipients': 'recipients' in notifications,
+                        'hasLastSent': 'last_sent' in notifications,
+                        'recipientsIsArray': isinstance(notifications.get('recipients', None), list),
+                        'lastSentIsDict': isinstance(notifications.get('last_sent', None), dict),
                     }
-                    file_result['topics'].append(topic_info)
+                
+                file_result['allEntries'].append(entry_info)
+                
+                # Add detailed info for entries with notifications
+                if 'notifications' in entry and 'recipients' in entry['notifications']:
+                    # Safety checks for proper structure
+                    recipients = entry['notifications'].get('recipients', [])
+                    if recipients and isinstance(recipients, list):
+                        last_sent = entry['notifications'].get('last_sent')
+                        if last_sent is None:
+                            last_sent = {}
+                            
+                        topic_info = {
+                            'topic': entry.get('query', 'Unknown'),
+                            'recipients': recipients,
+                            'last_sent': last_sent,
+                            'structured': True
+                        }
+                        file_result['topics'].append(topic_info)
             
             results.append(file_result)
             
         except Exception as e:
             file_result['error'] = str(e)
+            file_result['traceback'] = traceback.format_exc()
             results.append(file_result)
     
     return jsonify({
