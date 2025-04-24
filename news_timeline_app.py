@@ -3283,6 +3283,11 @@ if __name__ == '__main__':
                     <!-- Removed "first principles approach" section -->
                     
                     <!-- Removed "personal mission" section -->
+                    
+                    <div style="margin-top: 40px; text-align: center; color: #777; font-style: italic; padding: 20px;">
+                        <p>"The ability to reduce everything to simple fundamental laws does not imply the ability to start from those laws and reconstruct the universe."</p>
+                        <p style="font-size: 0.9em; margin-top: 8px;">— P.W. Anderson</p>
+                    </div>
                 </div>
             {% endif %}
         </main>
