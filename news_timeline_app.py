@@ -2630,32 +2630,55 @@ if __name__ == '__main__':
             // Use query-specific keys for localStorage
             const timerStartKey = `timerStart_${query}`;
             const cycleStartKey = `cycleStart_${query}`;
+            const refreshDueKey = `refreshDue_${query}`;
             
             // Check if we have a stored cycle start time for this query
             let cycleStartTime = localStorage.getItem(cycleStartKey);
+            let refreshDueTime = localStorage.getItem(refreshDueKey);
             
-            if (cycleStartTime) {
-                // We have an existing cycle - use it
-                const now = new Date().getTime();
-                cycleStartTime = parseInt(cycleStartTime, 10);
-                
-                // Calculate elapsed seconds since the start of this cycle
-                const elapsedSeconds = Math.floor((now - cycleStartTime) / 1000);
-                
-                // Calculate remaining seconds until next 60-minute mark (3600 seconds)
-                if (!window.timerSeconds) {
-                    window.timerSeconds = {};
-                }
-                window.timerSeconds[query] = Math.max(0, 3600 - elapsedSeconds);
-                
-                // If the timer is about to expire or has already expired, start a new cycle
-                if (window.timerSeconds[query] <= 5) {
-                    startNewCycle(query);
-                }
+            const now = new Date().getTime();
+            
+            // If no refresh due time exists or it's invalid, create a new one
+            if (!refreshDueTime || isNaN(parseInt(refreshDueTime, 10))) {
+                // Set refresh due time to 60 minutes from now
+                refreshDueTime = now + (3600 * 1000); // 60 minutes in milliseconds
+                localStorage.setItem(refreshDueKey, refreshDueTime.toString());
+                console.log(`Setting new refresh due time for ${query}: ${new Date(refreshDueTime).toLocaleTimeString()}`);
             } else {
-                // No existing cycle - start a new one
-                startNewCycle(query);
+                // Parse the existing refresh due time
+                refreshDueTime = parseInt(refreshDueTime, 10);
+                
+                // If the refresh is already due, trigger it now
+                if (now >= refreshDueTime) {
+                    console.log(`Refresh already due for ${query}, triggering now`);
+                    // Clear timer data before refresh
+                    localStorage.removeItem(cycleStartKey);
+                    localStorage.removeItem(refreshDueKey);
+                    // Perform refresh
+                    forceRefresh(query);
+                    return;
+                }
+                console.log(`Refresh due for ${query} at: ${new Date(refreshDueTime).toLocaleTimeString()}`);
             }
+            
+            // If we don't have cycle start time, initialize it
+            if (!cycleStartTime) {
+                localStorage.setItem(cycleStartKey, now.toString());
+            }
+            
+            // Also update the original search time if this is the first time
+            if (!localStorage.getItem(timerStartKey)) {
+                localStorage.setItem(timerStartKey, now.toString());
+            }
+            
+            // Calculate and set the remaining seconds
+            const remainingMilliseconds = refreshDueTime - now;
+            const remainingSeconds = Math.max(0, Math.floor(remainingMilliseconds / 1000));
+            
+            if (!window.timerSeconds) {
+                window.timerSeconds = {};
+            }
+            window.timerSeconds[query] = remainingSeconds;
             
             // Update the display immediately
             updateReloadTimer(query);
@@ -2663,21 +2686,24 @@ if __name__ == '__main__':
         
         function startNewCycle(query) {
             // Start a fresh 60-minute cycle
+            const now = new Date().getTime();
+            const refreshDueTime = now + (3600 * 1000); // 60 minutes in milliseconds
+            
             if (!window.timerSeconds) {
                 window.timerSeconds = {};
             }
-            window.timerSeconds[query] = 3600;
+            window.timerSeconds[query] = 3600; // 60 minutes in seconds
             
-            // Record when this cycle started
-            const now = new Date().getTime();
+            // Record when this cycle started and when it's due
             localStorage.setItem(`cycleStart_${query}`, now.toString());
+            localStorage.setItem(`refreshDue_${query}`, refreshDueTime.toString());
             
             // Also update the original search time if this is the first time
             if (!localStorage.getItem(`timerStart_${query}`)) {
                 localStorage.setItem(`timerStart_${query}`, now.toString());
             }
             
-            console.log(`Starting new 60-minute refresh cycle for query: ${query}`);
+            console.log(`Starting new 60-minute refresh cycle for ${query}, due at: ${new Date(refreshDueTime).toLocaleTimeString()}`);
         }
 
         function updateReloadTimer(query) {
@@ -2693,16 +2719,37 @@ if __name__ == '__main__':
                 return;
             }
             
-            // Decrement only if we still have time left
-            if (window.timerSeconds[query] > 0) {
-                window.timerSeconds[query]--;
+            // Instead of just decrementing, recalculate based on actual time
+            const refreshDueKey = `refreshDue_${query}`;
+            const refreshDueTime = parseInt(localStorage.getItem(refreshDueKey), 10);
+            const now = new Date().getTime();
+            
+            // If we have a valid refresh due time
+            if (refreshDueTime && !isNaN(refreshDueTime)) {
+                // Calculate actual remaining seconds
+                const remainingMilliseconds = refreshDueTime - now;
+                const remainingSeconds = Math.max(0, Math.floor(remainingMilliseconds / 1000));
+                window.timerSeconds[query] = remainingSeconds;
                 
-                // Update the cycle info every 10 seconds to avoid too much localStorage writing
-                if (window.timerSeconds[query] % 10 === 0) {
-                    const now = new Date().getTime();
-                    const cycleStartTime = now - (3600 - window.timerSeconds[query]) * 1000;
-                    localStorage.setItem(`cycleStart_${query}`, cycleStartTime.toString());
+                // If time is up and we should refresh
+                if (remainingSeconds <= 0) {
+                    if (timerIntervals[query]) {
+                        clearInterval(timerIntervals[query]);
+                        delete timerIntervals[query];
+                    }
+                    
+                    // Clear the cycle info before reloading
+                    localStorage.removeItem(`cycleStart_${query}`);
+                    localStorage.removeItem(`refreshDue_${query}`);
+                    
+                    // Use the same forceRefresh function for consistency
+                    forceRefresh(query);
+                    return;
                 }
+            } else {
+                // If no due time exists, start a new cycle
+                startNewCycle(query);
+                return;
             }
             
             const minutes = Math.floor(window.timerSeconds[query] / 60);
@@ -2712,19 +2759,6 @@ if __name__ == '__main__':
             const timerElements = document.querySelectorAll(`.reload-timer[data-query="${query}"]`);
             for (let element of timerElements) {
                 element.textContent = timerString;
-            }
-            
-            if (window.timerSeconds[query] <= 0) {
-                if (timerIntervals[query]) {
-                    clearInterval(timerIntervals[query]);
-                    delete timerIntervals[query];
-                }
-                
-                // Clear the cycle info before reloading - the timerStart stays to track when the original search happened
-                localStorage.removeItem(`cycleStart_${query}`);
-                
-                // Use the same forceRefresh function for consistency
-                forceRefresh(query);
             }
         }
 
