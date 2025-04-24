@@ -1481,6 +1481,15 @@ def process_history_file(file_path, now, eastern, updated_files):
         return
     
     updated = False
+    global brave_api
+    
+    # Initialize Brave API if needed
+    if brave_api is None:
+        brave_api_key = app.config.get("BRAVE_API_KEY")
+        if not brave_api_key:
+            print("Error: BRAVE_API_KEY not set, cannot refresh content")
+            return
+        brave_api = BraveNewsAPI(api_key=brave_api_key)
     
     # Process each entry in this history file
     for key, entry in history.items():
@@ -1490,6 +1499,11 @@ def process_history_file(file_path, now, eastern, updated_files):
         notifications = entry['notifications']
         if 'recipients' not in notifications or not notifications['recipients']:
             continue
+        
+        # Get topic query, count and freshness
+        topic = entry.get('query')
+        count = entry.get('count', 10)
+        freshness = entry.get('freshness', 'pw')
         
         # Process each recipient
         for recipient in notifications['recipients']:
@@ -1541,13 +1555,58 @@ def process_history_file(file_path, now, eastern, updated_files):
                     should_send = True
             
             if should_send:
-                topic = entry['query']
-                print(f"Sending {frequency} notification for '{topic}' to {email}")
+                print(f"Time to send {frequency} notification for '{topic}' to {email}")
+                
+                # Refresh the content before sending notification
+                print(f"Refreshing content for '{topic}' before sending notification")
+                results = entry.get('results')
+                
+                if results:
+                    # Update the current day results to get fresh content
+                    updated_results, days_with_new_articles = update_current_day_results(topic, count, freshness, results)
+                    
+                    if updated_results != results:
+                        # We got new content, update the entry
+                        entry['results'] = updated_results
+                        entry['timestamp'] = datetime.now().isoformat()
+                        
+                        # Regenerate summaries for days with new content
+                        if 'day_summaries' not in entry:
+                            entry['day_summaries'] = {}
+                            
+                        # Process articles
+                        if updated_results and 'results' in updated_results:
+                            sorted_articles = sorted(updated_results['results'], key=extract_age_in_seconds)
+                            
+                            # Group articles by day
+                            articles_by_day = {}
+                            for article in sorted_articles:
+                                day = day_group_filter(article)
+                                if day not in articles_by_day:
+                                    articles_by_day[day] = []
+                                articles_by_day[day].append(article)
+                            
+                            # Generate or refresh summaries for days
+                            for day, day_articles in articles_by_day.items():
+                                # Always refresh Today's summary, or if this day has new articles
+                                if day == 'Today' or day in days_with_new_articles or not is_valid_summary(entry['day_summaries'].get(day)):
+                                    print(f"Generating new summary for {day} for topic '{topic}'")
+                                    day_summary = summarize_daily_news(day_articles, topic)
+                                    if is_valid_summary(day_summary):
+                                        entry['day_summaries'][day] = day_summary
+                                        print(f"Generated new {day} summary: {day_summary[:50]}...")
+                
+                # Now send the notification with the fresh content
                 if send_notification_email(topic, entry, frequency, email):
                     # Update last sent timestamp for this recipient
+                    current_time = datetime.now().isoformat()
+                    print(f"Successfully sent notification for '{topic}' to {email}, updating last_sent to {current_time}")
+                    
                     if 'last_sent' not in notifications:
                         notifications['last_sent'] = {}
-                    notifications['last_sent'][email] = datetime.now().isoformat()
+                    
+                    # Update the timestamp to current time
+                    notifications['last_sent'][email] = current_time
                     updated = True
     
     # Mark this file for update if changes were made
@@ -1561,6 +1620,16 @@ def send_notification_email(topic, entry, frequency, recipient_email):
         return False
     
     print(f"Preparing to send {frequency} notification email for topic '{topic}' to {recipient_email}")
+    
+    # Display content timestamp to debug freshness
+    content_timestamp = entry.get('timestamp')
+    if content_timestamp:
+        try:
+            content_time = datetime.fromisoformat(content_timestamp)
+            age_minutes = (datetime.now() - content_time).total_seconds() / 60
+            print(f"Content timestamp: {content_timestamp} (age: {int(age_minutes)} minutes)")
+        except Exception as e:
+            print(f"Error parsing content timestamp: {e}")
     
     # Check if we have summaries
     day_summaries = entry.get('day_summaries', {})
