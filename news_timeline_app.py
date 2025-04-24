@@ -3244,7 +3244,7 @@ if __name__ == '__main__':
                 {% endif %}
             {% elif active_tab == 'raison-detre' %}
                 <div class="brief-card expanded philosophy-page">
-                    <h1 class="section-title">raison d'être</h1>
+                    
                     
                     <div class="philosophy-section">
                         <h2>why i built this</h2>
@@ -3262,10 +3262,11 @@ if __name__ == '__main__':
                             disconnected fragments that destroy context and coherence.
                         </p>
                         <p>
-                            loop challenges this paradigm by restoring the connections, presenting not isolated data points
+                            loop challenges this paradigm by restoring these connections, presenting not isolated data points
                             but complete trajectories—a temporal map of events and their relationships across multiple
                             dimensions of relevance. loop tracks trends, entities, and relationships across time–notifying you of immediate changes.
-
+                        </p>
+                        <p>
                             my coarse take on antireductionism as a 17-year old here.
                         </p>
                     </div>
