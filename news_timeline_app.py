@@ -236,8 +236,8 @@ def summarize_daily_news_llama(day_articles, query):
         return None
 
 # Load search history from JSON file
-def load_search_history():
-    history_file = get_history_file()
+def load_search_history(user=None):
+    history_file = get_history_file(user=user)
     if os.path.exists(history_file):
         try:
             with open(history_file, 'r') as f:
@@ -247,8 +247,8 @@ def load_search_history():
     return {}
 
 # Save search history to JSON file
-def save_search_history(history):
-    history_file = get_history_file()
+def save_search_history(history, user=None):
+    history_file = get_history_file(user=user)
     try:
         # Ensure the directory exists if the path contains a directory
         dir_name = os.path.dirname(history_file)
@@ -260,14 +260,32 @@ def save_search_history(history):
         print(f"Error saving history: {e}")
 
 # Get search history file path
-def get_history_file():
-    if current_user.is_authenticated:
-        history_file = current_user.get_history_file()
-        if history_file:  # Check that we got a valid path
-            return history_file
+def get_history_file(user=None):
+    """
+    Get search history file path
     
-    # Default location for anonymous users or if user path is invalid
-    default_dir = 'user_data/anonymous'
+    Args:
+        user: Optional User object. If not provided and current_user is authenticated,
+              will use current_user. For background tasks where current_user is not 
+              available, this allows passing None to get the default location.
+    """
+    try:
+        # First try with the provided user parameter
+        if user and hasattr(user, 'is_authenticated') and user.is_authenticated:
+            history_file = user.get_history_file()
+            if history_file:  # Check that we got a valid path
+                return history_file
+        
+        # Then try with current_user if in a request context
+        if 'current_user' in globals() and current_user and hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
+            history_file = current_user.get_history_file()
+            if history_file:  # Check that we got a valid path
+                return history_file
+    except Exception as e:
+        print(f"Error getting user history file: {e}")
+    
+    # Default location for anonymous users, background threads, or if user path is invalid
+    default_dir = 'user_data/shared'
     os.makedirs(default_dir, exist_ok=True)
     return os.path.join(default_dir, 'search_history.json')
 
@@ -1341,8 +1359,8 @@ def save_notification_settings(user_email, topic, frequency):
 
 def check_and_send_notifications():
     """Check for due notifications and send emails"""
-    if not current_user.is_authenticated:
-        return
+    # Remove the authentication check since this runs in a background thread
+    # where current_user is not available
     
     history = load_search_history()
     updated = False
@@ -1535,12 +1553,33 @@ def send_notification_email(topic, entry, frequency, recipient_email):
 def schedule_notification_checks():
     """Start a background thread to periodically check for notifications"""
     def check_notifications_thread():
+        check_count = 0
         while True:
             try:
+                check_count += 1
+                print(f"[{datetime.now().isoformat()}] Running notification check #{check_count}")
+                
+                # Load history and check number of topics with notifications
+                history = load_search_history()
+                notification_topics = 0
+                for key, entry in history.items():
+                    if 'notifications' in entry and 'recipients' in entry['notifications'] and entry['notifications']['recipients']:
+                        notification_topics += 1
+                
+                print(f"Found {notification_topics} topics with notification settings")
+                
+                # Run the actual notification check
                 check_and_send_notifications()
+                
+                # Log completion
+                print(f"[{datetime.now().isoformat()}] Completed notification check #{check_count}")
             except Exception as e:
                 print(f"Error in notification check: {e}")
+                import traceback
+                traceback.print_exc()
+            
             # Check every 15 minutes
+            print(f"Next notification check scheduled in 15 minutes")
             time.sleep(900)
     
     thread = threading.Thread(target=check_notifications_thread)
