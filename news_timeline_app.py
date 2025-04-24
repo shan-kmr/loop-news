@@ -555,43 +555,6 @@ def index():
             save_search_history(history)
             print(f"Auto-refreshed {len(refreshed_entries)} stale entries: {', '.join(refreshed_entries)}")
     
-    # Check for entries without valid summaries and attempt to regenerate them
-    summaries_fixed = []
-    for key, entry in history.items():
-        query = entry.get('query')
-        if not query:
-            continue
-            
-        # Check if this entry has valid summaries
-        has_valid_summary = False
-        if 'day_summaries' in entry and entry['day_summaries']:
-            for day, summary in entry['day_summaries'].items():
-                if is_valid_summary(summary):
-                    has_valid_summary = True
-                    break
-        
-        # If no valid summaries, try to regenerate them
-        if not has_valid_summary and 'results' in entry and entry['results'] and 'results' in entry['results']:
-            print(f"Found topic '{query}' without valid summaries. Attempting to fix.")
-            sorted_articles = sorted(entry['results']['results'], key=extract_age_in_seconds)
-            
-            # Regenerate summaries for Today and Yesterday
-            if 'day_summaries' not in entry:
-                entry['day_summaries'] = {}
-            
-            # Find today's articles
-            today_articles = [a for a in sorted_articles if day_group_filter(a) == 'Today']
-            if today_articles:
-                today_summary = summarize_daily_news(today_articles, query)
-                if is_valid_summary(today_summary):
-                    entry['day_summaries']['Today'] = today_summary
-                    summaries_fixed.append(query)
-    
-    # Save if we fixed any summaries
-    if summaries_fixed:
-        save_search_history(history)
-        print(f"Fixed summaries for {len(summaries_fixed)} topics: {', '.join(summaries_fixed)}")
-    
     # Collect day summaries regardless of request method
     day_summaries = collect_day_summaries(history)
     print(f"Collected {len(day_summaries)} day summaries for home page display")
@@ -2711,12 +2674,9 @@ if __name__ == '__main__':
                                 {% endfor %}
                             {% endif %}
                             
-                            {# Last resort: fallback text - NOW RESTORED WITH BETTER MESSAGING #}
+                            {# Last resort: fallback text - NOW REMOVED #}
                             {% if not has_summary %}
-                                <div class="brief-summary-container">
-                                    <div class="summary-date">No updates yet</div>
-                                    <p class="brief-summary">Click to refresh this topic and generate the latest summaries. If this persists, try searching for this topic again.</p>
-                                </div>
+                                {# Fallback text removed - now using the arrow in top-right instead #}
                             {% endif %}
                             
                             <button class="delete-button" onclick="event.stopPropagation(); deleteHistoryItem('{{ entry.query }}')">
