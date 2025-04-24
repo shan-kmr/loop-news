@@ -1557,18 +1557,51 @@ def process_history_file(file_path, now, eastern, updated_files):
             if should_send:
                 print(f"Time to send {frequency} notification for '{topic}' to {email}")
                 
+                # Variables to track what's new
+                has_new_content = False
+                new_articles = []
+                previous_today_summary = None
+                current_today_summary = None
+                
+                # Store the previous Today summary if it exists
+                if 'day_summaries' in entry and 'Today' in entry['day_summaries']:
+                    previous_today_summary = entry['day_summaries'].get('Today')
+                
                 # Refresh the content before sending notification
                 print(f"Refreshing content for '{topic}' before sending notification")
                 results = entry.get('results')
                 
                 if results:
+                    # Get the current set of URLs to compare later
+                    current_urls = set()
+                    if 'results' in results:
+                        for article in results['results']:
+                            if 'url' in article:
+                                current_urls.add(article['url'])
+                    
                     # Update the current day results to get fresh content
                     updated_results, days_with_new_articles = update_current_day_results(topic, count, freshness, results)
                     
-                    if updated_results != results:
+                    # Check if we got new content
+                    content_updated = updated_results != results
+                    
+                    if content_updated:
                         # We got new content, update the entry
                         entry['results'] = updated_results
                         entry['timestamp'] = datetime.now().isoformat()
+                        
+                        # Find new articles by comparing URLs
+                        if 'results' in updated_results:
+                            for article in sorted(updated_results['results'], key=extract_age_in_seconds):
+                                if 'url' in article and article['url'] not in current_urls:
+                                    new_articles.append(article)
+                                    has_new_content = True
+                            
+                            # Cap to top 3 newest articles
+                            new_articles = new_articles[:3]
+                            
+                            if new_articles:
+                                print(f"Found {len(new_articles)} new articles for '{topic}'")
                         
                         # Regenerate summaries for days with new content
                         if 'day_summaries' not in entry:
@@ -1595,9 +1628,22 @@ def process_history_file(file_path, now, eastern, updated_files):
                                     if is_valid_summary(day_summary):
                                         entry['day_summaries'][day] = day_summary
                                         print(f"Generated new {day} summary: {day_summary[:50]}...")
+                                        
+                                        # For Today's summary, check if it's different from previous
+                                        if day == 'Today':
+                                            current_today_summary = day_summary
+                                            if previous_today_summary != current_today_summary:
+                                                print("Today's summary has changed")
+                                                has_new_content = True
                 
-                # Now send the notification with the fresh content
-                if send_notification_email(topic, entry, frequency, email):
+                # For hourly emails, only send if there's new content
+                should_actually_send = True
+                if frequency == 'hourly' and not has_new_content:
+                    print(f"No new content for '{topic}', skipping hourly notification to {email}")
+                    should_actually_send = False
+                
+                # Now send the notification with the fresh content if appropriate
+                if should_actually_send and send_notification_email(topic, entry, frequency, email, new_articles):
                     # Update last sent timestamp for this recipient
                     current_time = datetime.now().isoformat()
                     print(f"Successfully sent notification for '{topic}' to {email}, updating last_sent to {current_time}")
@@ -1613,7 +1659,7 @@ def process_history_file(file_path, now, eastern, updated_files):
     if updated:
         updated_files[file_path] = history
 
-def send_notification_email(topic, entry, frequency, recipient_email):
+def send_notification_email(topic, entry, frequency, recipient_email, new_articles=None):
     """Send notification email for a specific topic"""
     if not recipient_email:
         print(f"Error: No recipient email provided")
@@ -1694,6 +1740,39 @@ def send_notification_email(topic, entry, frequency, recipient_email):
     if frequency == 'daily' and summary_date == 'Yesterday' and yesterday_date:
         email_date_str = yesterday_date
     
+    # Create HTML for new articles section (for hourly emails)
+    new_articles_html = ""
+    if frequency == 'hourly' and new_articles:
+        new_articles_html = f"""
+        <div style="margin-bottom: 30px; padding: 15px; background-color: #f8f8f8; border-left: 4px solid #555;">
+          <h2 style="font-size: 18px; color: #555; margin-bottom: 15px;">Latest Updates ({len(new_articles)} new article{'s' if len(new_articles) > 1 else ''})</h2>
+          <ul style="padding-left: 20px; margin-bottom: 0;">
+        """
+        
+        for article in new_articles:
+            title = article.get('title', 'No title')
+            description = article.get('description', 'No description available')
+            url = article.get('url', '#')
+            age = article.get('age', 'Unknown time')
+            source = article.get('meta_url', {}).get('netloc', 'Unknown source')
+            
+            new_articles_html += f"""
+            <li style="margin-bottom: 15px;">
+              <a href="{url}" style="font-weight: bold; color: #333; text-decoration: none;">{title}</a>
+              <div style="margin-top: 5px; color: #555; font-size: 13px;">
+                {source} • {age}
+              </div>
+              <div style="margin-top: 5px; line-height: 1.4;">
+                {description[:150]}{'...' if len(description) > 150 else ''}
+              </div>
+            </li>
+            """
+        
+        new_articles_html += """
+          </ul>
+        </div>
+        """
+    
     # Email body
     html = f"""
     <html>
@@ -1705,6 +1784,8 @@ def send_notification_email(topic, entry, frequency, recipient_email):
           <h2 style="font-size: 18px; color: #555; margin-bottom: 10px;">{summary_date}'s Summary ({email_date_str} EST)</h2>
           <p style="line-height: 1.6;">{summary_text}</p>
         </div>
+        
+        {new_articles_html}
         
         <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 14px; color: #777;">
           <p>View full history at: <a href="http://loopnow.co/history/{topic}" style="color: #555;">View Details</a></p>
@@ -1723,6 +1804,8 @@ def send_notification_email(topic, entry, frequency, recipient_email):
         print(f"To: {recipient_email}")
         print(f"Subject: {msg['Subject']}")
         print(f"Body preview: {summary_text[:100]}...")
+        if new_articles:
+            print(f"Including {len(new_articles)} new articles in the email")
         print(f"--- END EMAIL ---\n")
         
         # Attempt to send the email using SMTP
