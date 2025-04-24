@@ -1273,27 +1273,121 @@ def save_notification_settings(user_email, topic, frequency):
         if entry.get('query') == topic:
             # Create or update notification settings
             if 'notifications' not in entry:
-                entry['notifications'] = {}
+                entry['notifications'] = {
+                    'recipients': [],
+                    'last_sent': {}
+                }
             
-            entry['notifications'] = {
-                'email': user_email,
-                'frequency': frequency,
-                'last_sent': None  # Will be updated when first email is sent
-            }
+            # Make sure notifications has the correct structure
+            if 'recipients' not in entry['notifications']:
+                entry['notifications']['recipients'] = []
+                
+            if 'last_sent' not in entry['notifications']:
+                entry['notifications']['last_sent'] = {}
+            
+            # Check if this email is already in recipients
+            recipient_exists = False
+            for recipient in entry['notifications']['recipients']:
+                if recipient['email'] == user_email:
+                    # Update existing recipient
+                    recipient['frequency'] = frequency
+                    recipient_exists = True
+                    break
+            
+            # Add new recipient if not found
+            if not recipient_exists:
+                entry['notifications']['recipients'].append({
+                    'email': user_email,
+                    'frequency': frequency
+                })
             
             # Save updated history
             save_search_history(history)
-            print(f"Saved notification settings for '{topic}': {frequency}")
+            print(f"Saved notification settings for '{topic}' to {user_email}: {frequency}")
             return True
     
     return False
 
-def send_notification_email(topic, entry, frequency):
-    """Send notification email for a specific topic"""
-    notifications = entry.get('notifications', {})
-    email = notifications.get('email')
+def check_and_send_notifications():
+    """Check for due notifications and send emails"""
+    if not current_user.is_authenticated:
+        return
     
-    if not email:
+    history = load_search_history()
+    updated = False
+    
+    # Current time in Eastern Time
+    eastern = pytz.timezone('US/Eastern')
+    now = datetime.now(eastern)
+    
+    for key, entry in history.items():
+        if 'notifications' not in entry or 'query' not in entry:
+            continue
+        
+        notifications = entry['notifications']
+        if 'recipients' not in notifications or not notifications['recipients']:
+            continue
+        
+        # Process each recipient
+        for recipient in notifications['recipients']:
+            email = recipient.get('email')
+            frequency = recipient.get('frequency')
+            
+            if not email or not frequency:
+                continue
+            
+            # Get last sent time for this recipient
+            last_sent_dict = notifications.get('last_sent', {})
+            last_sent_str = last_sent_dict.get(email)
+            
+            should_send = False
+            
+            # Check if we should send based on frequency
+            if not last_sent_str:
+                # Never sent before
+                should_send = True
+            else:
+                try:
+                    last_sent = datetime.fromisoformat(last_sent_str)
+                    
+                    # If datetime is naive (no timezone), assume it's in UTC
+                    if last_sent.tzinfo is None:
+                        last_sent = pytz.utc.localize(last_sent)
+                    
+                    # Convert to Eastern Time
+                    last_sent = last_sent.astimezone(eastern)
+                    
+                    if frequency == 'hourly':
+                        # Send if it's been more than an hour
+                        diff = now - last_sent
+                        if diff.total_seconds() >= 3600:  # 1 hour
+                            should_send = True
+                    elif frequency == 'daily':
+                        # Send if it's been more than a day
+                        diff = now - last_sent
+                        if diff.total_seconds() >= 86400:  # 24 hours
+                            should_send = True
+                except Exception as e:
+                    print(f"Error parsing last sent time: {e}")
+                    should_send = True
+            
+            if should_send:
+                topic = entry['query']
+                print(f"Sending {frequency} notification for '{topic}' to {email}")
+                if send_notification_email(topic, entry, frequency, email):
+                    # Update last sent timestamp for this recipient
+                    if 'last_sent' not in notifications:
+                        notifications['last_sent'] = {}
+                    notifications['last_sent'][email] = datetime.now().isoformat()
+                    updated = True
+    
+    # Save updated last_sent timestamps
+    if updated:
+        save_search_history(history)
+
+def send_notification_email(topic, entry, frequency, recipient_email):
+    """Send notification email for a specific topic"""
+    if not recipient_email:
         return False
     
     # Check if we have summaries
@@ -1328,7 +1422,7 @@ def send_notification_email(topic, entry, frequency):
     # Create email
     msg = MIMEMultipart()
     msg['From'] = "Loop News <noreply@loop-news.com>"
-    msg['To'] = email
+    msg['To'] = recipient_email
     
     # Get current time in Eastern Time
     eastern = pytz.timezone('US/Eastern')
@@ -1353,7 +1447,7 @@ def send_notification_email(topic, entry, frequency):
         </div>
         
         <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 14px; color: #777;">
-          <p>View full detailed analysis: <a href="http://127.0.0.1:5000/history/{topic}" style="color: #555;">View Details</a></p>
+          <p>View full history at: <a href="http://loopnow.co/history/{topic}" style="color: #555;">View Details</a></p>
           <p>Notification frequency: {frequency}. To change your settings, click the bell icon next to the topic name.</p>
         </div>
       </body>
@@ -1366,7 +1460,7 @@ def send_notification_email(topic, entry, frequency):
     try:
         # Print email to console for debugging
         print(f"\n--- NOTIFICATION EMAIL ---")
-        print(f"To: {email}")
+        print(f"To: {recipient_email}")
         print(f"Subject: {msg['Subject']}")
         print(f"Body preview: {summary_text[:100]}...")
         print(f"--- END EMAIL ---\n")
@@ -1377,8 +1471,8 @@ def send_notification_email(topic, entry, frequency):
             # For Gmail, you need an app password if 2FA is enabled
             smtp_server = "smtp.gmail.com"
             port = 587  # For starttls
-            sender_email = "your_email@gmail.com"  # Replace with a real email for production
-            password = "your_app_password"  # You would need to use an app password for Gmail
+            sender_email = "shantanu.kum97@gmail.com"  # Replace with a real email for production
+            password = "Prakriti@123"  # You would need to use an app password for Gmail
             
             # Create a secure SSL context
             context = ssl.create_default_context()
@@ -1389,12 +1483,12 @@ def send_notification_email(topic, entry, frequency):
             server.starttls(context=context)  # Secure the connection
             server.ehlo()  # Can be omitted
             
-            # Comment out actual login/send for safety in development
-            # server.login(sender_email, password)
-            # server.sendmail(sender_email, email, msg.as_string())
-            # server.quit()
+            # Send the email
+            server.login(sender_email, password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+            server.quit()
             
-            print(f"Email would be sent to {email} - disabled for safety in development")
+            print(f"Email sent to {recipient_email} successfully")
             
         except Exception as e:
             print(f"Error sending email: {e}")
@@ -1404,75 +1498,7 @@ def send_notification_email(topic, entry, frequency):
         print(f"Error preparing email: {e}")
         return False
     
-    # Update last sent timestamp
-    notifications['last_sent'] = datetime.now().isoformat()
-    entry['notifications'] = notifications
-    
     return True
-
-def check_and_send_notifications():
-    """Check for due notifications and send emails"""
-    if not current_user.is_authenticated:
-        return
-    
-    history = load_search_history()
-    updated = False
-    
-    # Current time in Eastern Time
-    eastern = pytz.timezone('US/Eastern')
-    now = datetime.now(eastern)
-    
-    for key, entry in history.items():
-        if 'notifications' not in entry or 'query' not in entry:
-            continue
-        
-        notifications = entry['notifications']
-        frequency = notifications.get('frequency')
-        last_sent_str = notifications.get('last_sent')
-        
-        if not frequency or not notifications.get('email'):
-            continue
-        
-        should_send = False
-        
-        # Check if we should send based on frequency
-        if not last_sent_str:
-            # Never sent before
-            should_send = True
-        else:
-            try:
-                last_sent = datetime.fromisoformat(last_sent_str)
-                
-                # If datetime is naive (no timezone), assume it's in UTC
-                if last_sent.tzinfo is None:
-                    last_sent = pytz.utc.localize(last_sent)
-                
-                # Convert to Eastern Time
-                last_sent = last_sent.astimezone(eastern)
-                
-                if frequency == 'hourly':
-                    # Send if it's been more than an hour
-                    diff = now - last_sent
-                    if diff.total_seconds() >= 3600:  # 1 hour
-                        should_send = True
-                elif frequency == 'daily':
-                    # Send if it's been more than a day
-                    diff = now - last_sent
-                    if diff.total_seconds() >= 86400:  # 24 hours
-                        should_send = True
-            except Exception as e:
-                print(f"Error parsing last sent time: {e}")
-                should_send = True
-        
-        if should_send:
-            topic = entry['query']
-            print(f"Sending {frequency} notification for '{topic}'")
-            if send_notification_email(topic, entry, frequency):
-                updated = True
-    
-    # Save updated last_sent timestamps
-    if updated:
-        save_search_history(history)
 
 # Schedule notification checks
 def schedule_notification_checks():
@@ -1504,12 +1530,79 @@ def save_notification_api():
     if not topic or not frequency:
         return jsonify({'success': False, 'error': 'Missing required fields'})
     
-    # Hardcode the email to the specified address
-    user_email = "shantanu.kum97@gmail.com"
+    # Get the email - this could come from the request or use a hardcoded value
+    # This can be expanded to handle multiple recipients
+    user_email = data.get('email', "shantanu.kum97@gmail.com")
     
     success = save_notification_settings(user_email, topic, frequency)
     
     return jsonify({'success': success})
+
+@app.route('/api/test-notification/<topic>/<frequency>', methods=['GET'])
+def test_notification(topic, frequency):
+    """Test endpoint to manually trigger a notification email"""
+    if not current_user.is_authenticated:
+        return jsonify({'success': False, 'error': 'Not authenticated'})
+    
+    # Find the topic in the history
+    history = load_search_history()
+    entry = None
+    
+    for key, history_entry in history.items():
+        if history_entry.get('query') == topic:
+            entry = history_entry
+            break
+    
+    if not entry:
+        return jsonify({'success': False, 'error': f'Topic not found: {topic}'})
+    
+    # Get email addresses to test with - can be comma-separated in the query param
+    test_emails = request.args.get('emails', 'shantanu.kum97@gmail.com')
+    email_list = [email.strip() for email in test_emails.split(',')]
+    
+    # Set up notifications object if it doesn't exist
+    if 'notifications' not in entry:
+        entry['notifications'] = {
+            'recipients': [],
+            'last_sent': {}
+        }
+    
+    # Add test recipients if they don't exist
+    if 'recipients' not in entry['notifications']:
+        entry['notifications']['recipients'] = []
+    
+    success = True
+    results = []
+    
+    # Send to each email
+    for email in email_list:
+        # Add or update recipient
+        recipient_exists = False
+        for recipient in entry['notifications']['recipients']:
+            if recipient['email'] == email:
+                recipient['frequency'] = frequency
+                recipient_exists = True
+                break
+                
+        if not recipient_exists:
+            entry['notifications']['recipients'].append({
+                'email': email,
+                'frequency': frequency
+            })
+        
+        # Send test email
+        email_success = send_notification_email(topic, entry, frequency, email)
+        results.append({'email': email, 'success': email_success})
+        success = success and email_success
+    
+    # Save changes
+    save_search_history(history)
+    
+    return jsonify({
+        'success': success,
+        'results': results,
+        'message': f"Test notification results for {topic} ({frequency})"
+    })
 
 if __name__ == '__main__':
     # Initialize models in background threads to avoid blocking app startup
@@ -3331,4 +3424,4 @@ if __name__ == '__main__':
     print("NOTE: Set the following environment variables for Google authentication:")
     print("export GOOGLE_CLIENT_ID=your_google_client_id")
     print("export GOOGLE_CLIENT_SECRET=your_google_client_secret")
-    app.run(host='127.0.0.1', port=5000, debug=True) 
+    app.run(host='0.0.0.0', port=5000, debug=True) 
