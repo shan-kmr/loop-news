@@ -1312,63 +1312,177 @@ def raison_detre():
 
 def save_notification_settings(user_email, topic, frequency):
     """Save notification settings to the user's history file"""
-    if not current_user.is_authenticated:
-        return False
+    print(f"Attempting to save notification settings: {user_email}, {topic}, {frequency}")
     
-    history = load_search_history()
+    # Try to find the topic in any history file
+    found = False
+    user_dir = 'user_data'
     
-    # Find the entry for this topic
-    for key, entry in history.items():
-        if entry.get('query') == topic:
-            # Create or update notification settings
-            if 'notifications' not in entry:
-                entry['notifications'] = {
-                    'recipients': [],
-                    'last_sent': {}
-                }
-            
-            # Make sure notifications has the correct structure
-            if 'recipients' not in entry['notifications']:
-                entry['notifications']['recipients'] = []
+    # Generate email-based path for this user
+    safe_email = user_email.replace("@", "_at_").replace(".", "_dot_")
+    user_specific_dir = os.path.join(user_dir, safe_email)
+    os.makedirs(user_specific_dir, exist_ok=True)
+    
+    user_history_file = os.path.join(user_specific_dir, 'search_history.json')
+    
+    # First check if this user already has a history file
+    if os.path.exists(user_history_file):
+        try:
+            with open(user_history_file, 'r') as f:
+                history = json.load(f)
                 
-            if 'last_sent' not in entry['notifications']:
-                entry['notifications']['last_sent'] = {}
-            
-            # Check if this email is already in recipients
-            recipient_exists = False
-            for recipient in entry['notifications']['recipients']:
-                if recipient['email'] == user_email:
-                    # Update existing recipient
-                    recipient['frequency'] = frequency
-                    recipient_exists = True
-                    break
-            
-            # Add new recipient if not found
-            if not recipient_exists:
-                entry['notifications']['recipients'].append({
-                    'email': user_email,
-                    'frequency': frequency
-                })
-            
-            # Save updated history
-            save_search_history(history)
-            print(f"Saved notification settings for '{topic}' to {user_email}: {frequency}")
-            return True
+            # Look for the topic in this user's history
+            for key, entry in history.items():
+                if entry.get('query') == topic:
+                    # Create or update notification settings
+                    if 'notifications' not in entry:
+                        entry['notifications'] = {
+                            'recipients': [],
+                            'last_sent': {}
+                        }
+                    
+                    # Make sure notifications has the correct structure
+                    if 'recipients' not in entry['notifications']:
+                        entry['notifications']['recipients'] = []
+                        
+                    if 'last_sent' not in entry['notifications']:
+                        entry['notifications']['last_sent'] = {}
+                    
+                    # Check if this email is already in recipients
+                    recipient_exists = False
+                    for recipient in entry['notifications']['recipients']:
+                        if recipient['email'] == user_email:
+                            # Update existing recipient
+                            recipient['frequency'] = frequency
+                            recipient_exists = True
+                            break
+                    
+                    # Add new recipient if not found
+                    if not recipient_exists:
+                        entry['notifications']['recipients'].append({
+                            'email': user_email,
+                            'frequency': frequency
+                        })
+                    
+                    # Save updated history
+                    with open(user_history_file, 'w') as f:
+                        json.dump(history, f)
+                    
+                    print(f"Saved notification settings for '{topic}' to {user_email}: {frequency} in {user_history_file}")
+                    return True
+                    
+            print(f"Topic {topic} not found in user history file: {user_history_file}")
+        except Exception as e:
+            print(f"Error reading/writing user history file: {e}")
+    else:
+        print(f"User history file does not exist: {user_history_file}")
     
+    # If we get here, either the user has no history file or the topic isn't in their history
+    # Look in the shared history file
+    shared_history_file = 'user_data/shared/search_history.json'
+    if os.path.exists(shared_history_file):
+        try:
+            with open(shared_history_file, 'r') as f:
+                history = json.load(f)
+                
+            # Look for the topic in shared history
+            for key, entry in history.items():
+                if entry.get('query') == topic:
+                    # Create or update notification settings
+                    if 'notifications' not in entry:
+                        entry['notifications'] = {
+                            'recipients': [],
+                            'last_sent': {}
+                        }
+                    
+                    # Make sure notifications has the correct structure
+                    if 'recipients' not in entry['notifications']:
+                        entry['notifications']['recipients'] = []
+                        
+                    if 'last_sent' not in entry['notifications']:
+                        entry['notifications']['last_sent'] = {}
+                    
+                    # Check if this email is already in recipients
+                    recipient_exists = False
+                    for recipient in entry['notifications']['recipients']:
+                        if recipient['email'] == user_email:
+                            # Update existing recipient
+                            recipient['frequency'] = frequency
+                            recipient_exists = True
+                            break
+                    
+                    # Add new recipient if not found
+                    if not recipient_exists:
+                        entry['notifications']['recipients'].append({
+                            'email': user_email,
+                            'frequency': frequency
+                        })
+                    
+                    # Save updated history to shared file
+                    with open(shared_history_file, 'w') as f:
+                        json.dump(history, f)
+                    
+                    print(f"Saved notification settings for '{topic}' to {user_email}: {frequency} in shared history")
+                    return True
+                    
+            print(f"Topic {topic} not found in shared history file")
+        except Exception as e:
+            print(f"Error reading/writing shared history file: {e}")
+    
+    # If we couldn't find the topic in any file, return failure
+    print(f"Failed to save notification settings: topic {topic} not found in any history file")
     return False
 
 def check_and_send_notifications():
-    """Check for due notifications and send emails"""
-    # Remove the authentication check since this runs in a background thread
-    # where current_user is not available
-    
-    history = load_search_history()
-    updated = False
+    """Check for due notifications and send emails by scanning all history files"""
+    updated_files = {}
     
     # Current time in Eastern Time
     eastern = pytz.timezone('US/Eastern')
     now = datetime.now(eastern)
     
+    # First, scan the user_data directory for all history files
+    user_dir = 'user_data'
+    
+    # Process the shared history file
+    process_history_file('user_data/shared/search_history.json', now, eastern, updated_files)
+    
+    # Process user-specific history files
+    for item in os.listdir(user_dir):
+        item_path = os.path.join(user_dir, item)
+        # Skip files, we want directories that might contain user data
+        if not os.path.isdir(item_path) or item == 'shared' or item == 'anonymous':
+            continue
+            
+        # Look for search_history.json in this user directory
+        history_file = os.path.join(item_path, 'search_history.json')
+        if os.path.exists(history_file):
+            process_history_file(history_file, now, eastern, updated_files)
+    
+    # Save any updated history files
+    for file_path, history in updated_files.items():
+        try:
+            with open(file_path, 'w') as f:
+                json.dump(history, f)
+            print(f"Updated history file: {file_path}")
+        except Exception as e:
+            print(f"Error saving history file {file_path}: {e}")
+
+def process_history_file(file_path, now, eastern, updated_files):
+    """Process a single history file for notifications"""
+    if not os.path.exists(file_path):
+        return
+        
+    try:
+        with open(file_path, 'r') as f:
+            history = json.load(f)
+    except Exception as e:
+        print(f"Error loading history file {file_path}: {e}")
+        return
+    
+    updated = False
+    
+    # Process each entry in this history file
     for key, entry in history.items():
         if 'notifications' not in entry or 'query' not in entry:
             continue
@@ -1430,9 +1544,9 @@ def check_and_send_notifications():
                     notifications['last_sent'][email] = datetime.now().isoformat()
                     updated = True
     
-    # Save updated last_sent timestamps
+    # Mark this file for update if changes were made
     if updated:
-        save_search_history(history)
+        updated_files[file_path] = history
 
 def send_notification_email(topic, entry, frequency, recipient_email):
     """Send notification email for a specific topic"""
@@ -1559,14 +1673,47 @@ def schedule_notification_checks():
                 check_count += 1
                 print(f"[{datetime.now().isoformat()}] Running notification check #{check_count}")
                 
-                # Load history and check number of topics with notifications
-                history = load_search_history()
-                notification_topics = 0
-                for key, entry in history.items():
-                    if 'notifications' in entry and 'recipients' in entry['notifications'] and entry['notifications']['recipients']:
-                        notification_topics += 1
+                # Scan the user_data directory
+                user_dir = 'user_data'
+                all_history_files = []
                 
-                print(f"Found {notification_topics} topics with notification settings")
+                # Add shared history file
+                shared_file = 'user_data/shared/search_history.json'
+                if os.path.exists(shared_file):
+                    all_history_files.append(shared_file)
+                
+                # Find all user-specific history files
+                for item in os.listdir(user_dir):
+                    item_path = os.path.join(user_dir, item)
+                    if not os.path.isdir(item_path) or item == 'shared' or item == 'anonymous':
+                        continue
+                    
+                    history_file = os.path.join(item_path, 'search_history.json')
+                    if os.path.exists(history_file):
+                        all_history_files.append(history_file)
+                
+                print(f"Found {len(all_history_files)} history files to check for notifications")
+                
+                # Check each file for notification settings
+                total_notification_topics = 0
+                for file_path in all_history_files:
+                    try:
+                        with open(file_path, 'r') as f:
+                            history = json.load(f)
+                        
+                        file_notification_topics = 0
+                        for key, entry in history.items():
+                            if 'notifications' in entry and 'recipients' in entry['notifications'] and entry['notifications']['recipients']:
+                                file_notification_topics += 1
+                        
+                        if file_notification_topics > 0:
+                            print(f"  - {file_path}: {file_notification_topics} topics with notification settings")
+                            total_notification_topics += file_notification_topics
+                        
+                    except Exception as e:
+                        print(f"  - Error reading {file_path}: {e}")
+                
+                print(f"Found {total_notification_topics} total topics with notification settings")
                 
                 # Run the actual notification check
                 check_and_send_notifications()
@@ -1672,6 +1819,64 @@ def test_notification(topic, frequency):
         'success': success,
         'results': results,
         'message': f"Test notification results for {topic} ({frequency})"
+    })
+
+@app.route('/api/debug-notifications', methods=['GET'])
+def debug_notifications():
+    """Debug endpoint to view all notification settings across all history files"""
+    if not current_user.is_authenticated:
+        return jsonify({'success': False, 'error': 'Not authenticated'})
+    
+    results = []
+    
+    # Scan the user_data directory
+    user_dir = 'user_data'
+    all_history_files = []
+    
+    # Add shared history file
+    shared_file = 'user_data/shared/search_history.json'
+    if os.path.exists(shared_file):
+        all_history_files.append(shared_file)
+    
+    # Find all user-specific history files
+    for item in os.listdir(user_dir):
+        item_path = os.path.join(user_dir, item)
+        if not os.path.isdir(item_path) or item == 'shared' or item == 'anonymous':
+            continue
+        
+        history_file = os.path.join(item_path, 'search_history.json')
+        if os.path.exists(history_file):
+            all_history_files.append(history_file)
+    
+    # Check each file for notification settings
+    for file_path in all_history_files:
+        file_result = {
+            'file': file_path,
+            'topics': []
+        }
+        
+        try:
+            with open(file_path, 'r') as f:
+                history = json.load(f)
+            
+            for key, entry in history.items():
+                if 'notifications' in entry and 'recipients' in entry['notifications']:
+                    topic_info = {
+                        'topic': entry.get('query', 'Unknown'),
+                        'recipients': entry['notifications'].get('recipients', []),
+                        'last_sent': entry['notifications'].get('last_sent', {})
+                    }
+                    file_result['topics'].append(topic_info)
+            
+            results.append(file_result)
+            
+        except Exception as e:
+            file_result['error'] = str(e)
+            results.append(file_result)
+    
+    return jsonify({
+        'success': True,
+        'historyFiles': results
     })
 
 if __name__ == '__main__':
