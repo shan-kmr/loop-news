@@ -21,6 +21,12 @@ import numpy as np
 import threading
 import queue
 import pytz  # Add pytz for timezone handling
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from urllib.parse import urlparse
+import traceback
 
 # Import configuration and models
 from config import *
@@ -1255,12 +1261,265 @@ def raison_detre():
         error=None
     )
 
+def save_notification_settings(user_email, topic, frequency):
+    """Save notification settings to the user's history file"""
+    if not current_user.is_authenticated:
+        return False
+    
+    history = load_search_history()
+    
+    # Find the entry for this topic
+    for key, entry in history.items():
+        if entry.get('query') == topic:
+            # Create or update notification settings
+            if 'notifications' not in entry:
+                entry['notifications'] = {}
+            
+            entry['notifications'] = {
+                'email': user_email,
+                'frequency': frequency,
+                'last_sent': None  # Will be updated when first email is sent
+            }
+            
+            # Save updated history
+            save_search_history(history)
+            print(f"Saved notification settings for '{topic}': {frequency}")
+            return True
+    
+    return False
+
+def send_notification_email(topic, entry, frequency):
+    """Send notification email for a specific topic"""
+    notifications = entry.get('notifications', {})
+    email = notifications.get('email')
+    
+    if not email:
+        return False
+    
+    # Check if we have summaries
+    day_summaries = entry.get('day_summaries', {})
+    if not day_summaries:
+        return False
+    
+    # For hourly, use today's summary; for daily, use yesterday's
+    summary_text = None
+    summary_date = None
+    
+    if frequency == 'hourly':
+        if 'Today' in day_summaries and is_valid_summary(day_summaries['Today']):
+            summary_text = day_summaries['Today']
+            summary_date = 'Today'
+    elif frequency == 'daily':
+        if 'Yesterday' in day_summaries and is_valid_summary(day_summaries['Yesterday']):
+            summary_text = day_summaries['Yesterday']
+            summary_date = 'Yesterday'
+    
+    # If no appropriate summary found, try other days
+    if not summary_text:
+        for day, summary in day_summaries.items():
+            if is_valid_summary(summary):
+                summary_text = summary
+                summary_date = day
+                break
+    
+    if not summary_text:
+        return False
+    
+    # Create email
+    msg = MIMEMultipart()
+    msg['From'] = "Loop News <noreply@loop-news.com>"
+    msg['To'] = email
+    
+    # Get current time in Eastern Time
+    eastern = pytz.timezone('US/Eastern')
+    now = datetime.now(eastern)
+    date_str = now.strftime('%b %d, %Y')
+    
+    if frequency == 'hourly':
+        msg['Subject'] = f"Hourly Update: {topic} - {date_str} EST"
+    else:
+        msg['Subject'] = f"Daily Summary: {topic} - {date_str} EST"
+    
+    # Email body
+    html = f"""
+    <html>
+      <head></head>
+      <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+        <h1 style="font-size: 24px; color: #333; margin-bottom: 20px;">loop: {topic}</h1>
+        
+        <div style="margin-bottom: 30px;">
+          <h2 style="font-size: 18px; color: #555; margin-bottom: 10px;">{summary_date}'s Summary ({date_str} EST)</h2>
+          <p style="line-height: 1.6;">{summary_text}</p>
+        </div>
+        
+        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 14px; color: #777;">
+          <p>View full detailed analysis: <a href="http://127.0.0.1:5000/history/{topic}" style="color: #555;">View Details</a></p>
+          <p>Notification frequency: {frequency}. To change your settings, click the bell icon next to the topic name.</p>
+        </div>
+      </body>
+    </html>
+    """
+    
+    # Attach HTML content
+    msg.attach(MIMEText(html, 'html'))
+    
+    try:
+        # Print email to console for debugging
+        print(f"\n--- NOTIFICATION EMAIL ---")
+        print(f"To: {email}")
+        print(f"Subject: {msg['Subject']}")
+        print(f"Body preview: {summary_text[:100]}...")
+        print(f"--- END EMAIL ---\n")
+        
+        # Attempt to send the email using SMTP
+        try:
+            # You would replace these with your actual SMTP server details
+            # For Gmail, you need an app password if 2FA is enabled
+            smtp_server = "smtp.gmail.com"
+            port = 587  # For starttls
+            sender_email = "your_email@gmail.com"  # Replace with a real email for production
+            password = "your_app_password"  # You would need to use an app password for Gmail
+            
+            # Create a secure SSL context
+            context = ssl.create_default_context()
+            
+            # Try to log in to server and send email
+            server = smtplib.SMTP(smtp_server, port)
+            server.ehlo()  # Can be omitted
+            server.starttls(context=context)  # Secure the connection
+            server.ehlo()  # Can be omitted
+            
+            # Comment out actual login/send for safety in development
+            # server.login(sender_email, password)
+            # server.sendmail(sender_email, email, msg.as_string())
+            # server.quit()
+            
+            print(f"Email would be sent to {email} - disabled for safety in development")
+            
+        except Exception as e:
+            print(f"Error sending email: {e}")
+            # Continue - we don't want to fail the notification process if email sending fails
+    
+    except Exception as e:
+        print(f"Error preparing email: {e}")
+        return False
+    
+    # Update last sent timestamp
+    notifications['last_sent'] = datetime.now().isoformat()
+    entry['notifications'] = notifications
+    
+    return True
+
+def check_and_send_notifications():
+    """Check for due notifications and send emails"""
+    if not current_user.is_authenticated:
+        return
+    
+    history = load_search_history()
+    updated = False
+    
+    # Current time in Eastern Time
+    eastern = pytz.timezone('US/Eastern')
+    now = datetime.now(eastern)
+    
+    for key, entry in history.items():
+        if 'notifications' not in entry or 'query' not in entry:
+            continue
+        
+        notifications = entry['notifications']
+        frequency = notifications.get('frequency')
+        last_sent_str = notifications.get('last_sent')
+        
+        if not frequency or not notifications.get('email'):
+            continue
+        
+        should_send = False
+        
+        # Check if we should send based on frequency
+        if not last_sent_str:
+            # Never sent before
+            should_send = True
+        else:
+            try:
+                last_sent = datetime.fromisoformat(last_sent_str)
+                
+                # If datetime is naive (no timezone), assume it's in UTC
+                if last_sent.tzinfo is None:
+                    last_sent = pytz.utc.localize(last_sent)
+                
+                # Convert to Eastern Time
+                last_sent = last_sent.astimezone(eastern)
+                
+                if frequency == 'hourly':
+                    # Send if it's been more than an hour
+                    diff = now - last_sent
+                    if diff.total_seconds() >= 3600:  # 1 hour
+                        should_send = True
+                elif frequency == 'daily':
+                    # Send if it's been more than a day
+                    diff = now - last_sent
+                    if diff.total_seconds() >= 86400:  # 24 hours
+                        should_send = True
+            except Exception as e:
+                print(f"Error parsing last sent time: {e}")
+                should_send = True
+        
+        if should_send:
+            topic = entry['query']
+            print(f"Sending {frequency} notification for '{topic}'")
+            if send_notification_email(topic, entry, frequency):
+                updated = True
+    
+    # Save updated last_sent timestamps
+    if updated:
+        save_search_history(history)
+
+# Schedule notification checks
+def schedule_notification_checks():
+    """Start a background thread to periodically check for notifications"""
+    def check_notifications_thread():
+        while True:
+            try:
+                check_and_send_notifications()
+            except Exception as e:
+                print(f"Error in notification check: {e}")
+            # Check every 15 minutes
+            time.sleep(900)
+    
+    thread = threading.Thread(target=check_notifications_thread)
+    thread.daemon = True
+    thread.start()
+    print("Started notification check thread")
+
+@app.route('/api/notifications/save', methods=['POST'])
+def save_notification_api():
+    """API endpoint to save notification settings"""
+    if not current_user.is_authenticated:
+        return jsonify({'success': False, 'error': 'Not authenticated'})
+    
+    data = request.json
+    topic = data.get('topic')
+    frequency = data.get('frequency')
+    
+    if not topic or not frequency:
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+    
+    # Hardcode the email to the specified address
+    user_email = "shantanu.kum97@gmail.com"
+    
+    success = save_notification_settings(user_email, topic, frequency)
+    
+    return jsonify({'success': success})
+
 if __name__ == '__main__':
     # Initialize models in background threads to avoid blocking app startup
     if LLAMA_AVAILABLE or OPENAI_AVAILABLE:
         init_thread = threading.Thread(target=init_models)
         init_thread.daemon = True
         init_thread.start()
+    
+    # Start notification scheduler
+    schedule_notification_checks()
     
     # Create templates
     with open('templates/index.html', 'w') as f:
@@ -2605,8 +2864,28 @@ if __name__ == '__main__':
             // Save preference to localStorage
             localStorage.setItem(`notify_${topic}`, frequency);
             
-            // You would typically send this to the server as well
-            console.log(`Saved notification preference for "${topic}": ${frequency}`);
+            // Send to server
+            fetch('/api/notifications/save', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    topic: topic,
+                    frequency: frequency
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log(`Saved notification preference for "${topic}": ${frequency}`);
+                } else {
+                    console.error('Failed to save notification settings');
+                }
+            })
+            .catch(error => {
+                console.error('Error saving notification settings:', error);
+            });
             
             // Close the modal
             closeNotificationModal();
