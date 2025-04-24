@@ -20,6 +20,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import threading
 import queue
+import pytz  # Add pytz for timezone handling
 
 # Import configuration and models
 from config import *
@@ -1180,13 +1181,28 @@ def day_group_filter(article):
 # Template filter to format dates
 @app.template_filter('format_datetime')
 def format_datetime_filter(value, format='%Y-%m-%d %H:%M'):
-    """Format a datetime object."""
+    """Format a datetime object using Eastern Time."""
     if isinstance(value, str):
         try:
             value = datetime.fromisoformat(value)
         except ValueError:
             return value
-    return value.strftime(format)
+    
+    # Convert to Eastern Time
+    eastern = pytz.timezone('US/Eastern')
+    
+    # If datetime is naive (no timezone), assume it's in UTC
+    if value.tzinfo is None:
+        value = pytz.utc.localize(value)
+    
+    # Convert to Eastern Time
+    value_eastern = value.astimezone(eastern)
+    
+    # Format with EST suffix if format includes date elements
+    if any(x in format for x in ['%Y', '%m', '%d', '%b']):
+        return f"{value_eastern.strftime(format)} EST"
+    else:
+        return value_eastern.strftime(format)
 
 # Make the is_valid_summary function available in templates
 app.jinja_env.globals['is_valid_summary'] = is_valid_summary
