@@ -1472,7 +1472,7 @@ def send_notification_email(topic, entry, frequency, recipient_email):
             smtp_server = "smtp.gmail.com"
             port = 587  # For starttls
             sender_email = "shantanu.kum97@gmail.com"  # Replace with a real email for production
-            password = "Prakriti@123"  # You would need to use an app password for Gmail
+            password = "gqgajschaboevchb"  # You would need to use an app password for Gmail
             
             # Create a secure SSL context
             context = ssl.create_default_context()
