@@ -3256,7 +3256,7 @@ if __name__ == '__main__':
                     </div>
                     
                     <div class="philosophy-section">
-                        <h2>beyond the feed</h2>
+                        <h2>beyond the headline</h2>
                         <p>
                             traditional news suffers from a fundamental reductionism—breaking complex narratives into
                             disconnected fragments that destroy context and coherence.
