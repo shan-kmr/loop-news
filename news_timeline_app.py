@@ -1814,7 +1814,7 @@ def process_history_file(file_path, now, eastern, updated_files):
                     content_updated = updated_results != results
                     
                     if content_updated:
-                        # We got new content, update the entry while preserving historical data
+                        # We got new content, update the entry
                         entry['results'] = updated_results
                         entry['timestamp'] = datetime.now().isoformat()
                         
@@ -1825,7 +1825,7 @@ def process_history_file(file_path, now, eastern, updated_files):
                                     new_articles.append(article)
                                     has_new_content = True
                             
-                            # Cap to top 3 newest articles for the email notification
+                            # Cap to top 3 newest articles
                             new_articles = new_articles[:3]
                             
                             if new_articles:
@@ -1835,18 +1835,7 @@ def process_history_file(file_path, now, eastern, updated_files):
                         if 'day_summaries' not in entry:
                             entry['day_summaries'] = {}
                             
-                        # Clear summaries for days with new articles to force regeneration
-                        if days_with_new_articles:
-                            print(f"Clearing summaries for days with new content: {', '.join(days_with_new_articles)}")
-                            for day in days_with_new_articles:
-                                if day in entry['day_summaries']:
-                                    entry['day_summaries'][day] = None
-                        
-                        # Force regeneration of Today's summary regardless
-                        if 'day_summaries' in entry:
-                            entry['day_summaries']['Today'] = None
-                        
-                        # Process articles to generate new summaries
+                        # Process articles
                         if updated_results and 'results' in updated_results:
                             sorted_articles = sorted(updated_results['results'], key=extract_age_in_seconds)
                             
@@ -1874,201 +1863,222 @@ def process_history_file(file_path, now, eastern, updated_files):
                                             if previous_today_summary != current_today_summary:
                                                 print("Today's summary has changed")
                                                 has_new_content = True
-                    else:
-                        # Even if results are the same, update the timestamp
-                        entry['timestamp'] = datetime.now().isoformat()
+                
+                # For hourly emails, only send if there's new content
+                should_actually_send = True
+                if frequency == 'hourly' and not has_new_content:
+                    print(f"No new content for '{topic}', skipping hourly notification to {email}")
+                    should_actually_send = False
+                
+                # Now send the notification with the fresh content if appropriate
+                if should_actually_send and send_notification_email(topic, entry, frequency, email, new_articles):
+                    # Update last sent timestamp for this recipient
+                    current_time = datetime.now().isoformat()
+                    print(f"Successfully sent notification for '{topic}' to {email}, updating last_sent to {current_time}")
                     
-                    # Update the cache with refreshed results
-                    entry['results'] = results
-                    save_search_history(history)
-                else:
-                    print(f"Using cached results for '{query}' from {cached_time}, {int(time_diff.total_seconds() / 60)} minutes old")
-                
-                # Process day summaries
-                day_summaries = entry.get('day_summaries', {})
-                if day_summaries is None:
-                    day_summaries = {}
-                
-                # Validate each summary to ensure we don't have invalid entries
-                valid_summaries = 0
-                for day, summary in list(day_summaries.items()):
-                    if is_valid_summary(summary):
-                        valid_summaries += 1
-                    else:
-                        # Clear invalid summaries so they'll be regenerated
-                        day_summaries[day] = None
-                
-                print(f"Found {valid_summaries} valid day summaries out of {len(day_summaries)} total in cache")
-                
-                # Process articles
-                if results and 'results' in results:
-                    sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
-                    # Pass existing day summaries to avoid regenerating summaries
-                    topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, current_query, day_summaries)
+                    if 'last_sent' not in notifications:
+                        notifications['last_sent'] = {}
                     
-                    # Save the updated day_summaries back to the entry to ensure they're stored in the cache
-                    # This is important for ensuring summaries persist between page visits
-                    if 'day_summaries' not in entry or entry['day_summaries'] != day_summaries:
-                        entry['day_summaries'] = day_summaries
-                        save_search_history(history)
-                        print(f"Saved {len(day_summaries)} day summaries to cache for query: '{query}'")
-                    
-                    # Check if we need to update summaries in history (redundant now but kept for safety)
-                    summary_changed = False
-                    for topic in topic_groups:
-                        day = topic['day_group']
-                        if day in day_summaries and day_summaries[day] != topic.get('day_summary') and is_valid_summary(topic.get('day_summary')):
-                            summary_changed = True
-                            day_summaries[day] = topic.get('day_summary')
-                    
-                    if summary_changed:
-                        entry['day_summaries'] = day_summaries
-                        save_search_history(history)
-                        print(f"Updated cache with new summaries for query: '{query}'")
-                
+                    # Update the timestamp to current time
+                    notifications['last_sent'][email] = current_time
+                    updated = True
+    
+    # Mark this file for update if changes were made
+    if updated:
+        updated_files[file_path] = history
+
+def send_notification_email(topic, entry, frequency, recipient_email, new_articles=None):
+    """Send notification email for a specific topic"""
+    if not recipient_email:
+        print(f"Error: No recipient email provided")
+        return False
+    
+    print(f"Preparing to send {frequency} notification email for topic '{topic}' to {recipient_email}")
+    
+    # Display content timestamp to debug freshness
+    content_timestamp = entry.get('timestamp')
+    if content_timestamp:
+        try:
+            content_time = datetime.fromisoformat(content_timestamp)
+            age_minutes = (datetime.now() - content_time).total_seconds() / 60
+            print(f"Content timestamp: {content_timestamp} (age: {int(age_minutes)} minutes)")
+        except Exception as e:
+            print(f"Error parsing content timestamp: {e}")
+    
+    # Check if we have summaries
+    day_summaries = entry.get('day_summaries', {})
+    if not day_summaries:
+        print(f"Error: No day summaries available for topic '{topic}'")
+        return False
+    
+    print(f"Available day summaries: {list(day_summaries.keys())}")
+    
+    # For hourly, use today's summary; for daily, use yesterday's
+    summary_text = None
+    summary_date = None
+    
+    # Get current time in Eastern Time
+    eastern = pytz.timezone('US/Eastern')
+    now = datetime.now(eastern)
+    date_str = now.strftime('%b %d, %Y')
+    
+    # For daily summaries using yesterday's content, use yesterday's date
+    yesterday_date = None
+    if frequency == 'daily':
+        yesterday = now - timedelta(days=1)
+        yesterday_date = yesterday.strftime('%b %d, %Y')
+    
+    if frequency == 'hourly':
+        if 'Today' in day_summaries and is_valid_summary(day_summaries['Today']):
+            summary_text = day_summaries['Today']
+            summary_date = 'Today'
+            print(f"Using Today's summary for hourly notification")
+    elif frequency == 'daily':
+        if 'Yesterday' in day_summaries and is_valid_summary(day_summaries['Yesterday']):
+            summary_text = day_summaries['Yesterday']
+            summary_date = 'Yesterday'
+            print(f"Using Yesterday's summary for daily notification")
+    
+    # If no appropriate summary found, try other days
+    if not summary_text:
+        print(f"No specific {frequency} summary found, looking for any valid summary")
+        for day, summary in day_summaries.items():
+            if is_valid_summary(summary):
+                summary_text = summary
+                summary_date = day
+                print(f"Using {day}'s summary instead")
                 break
     
-    except Exception as e:
-        print(f"Error processing history file {file_path}: {e}")
-        traceback.print_exc()
-
-def send_notification_email(topic, entry, frequency, email):
-    """Send a notification email for a topic with new content"""
-    try:
-        print(f"Sending {frequency} notification email for '{topic}' to {email}")
-        
-        # Email settings
-        sender_email = app.config.get("SMTP_FROM_EMAIL", "notifications@example.com")
-        sender_password = app.config.get("SMTP_PASSWORD", "")
-        smtp_server = app.config.get("SMTP_SERVER", "smtp.gmail.com")
-        smtp_port = int(app.config.get("SMTP_PORT", 587))
-        
-        # Create email message
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Timeline Update: {topic}"
-        msg["From"] = sender_email
-        msg["To"] = email
-        
-        # Basic text content
-        text_content = f"Updates for your timeline: {topic}\n\n"
-        text_content += f"View the latest updates at {request.host_url}history/{topic}\n\n"
-        
-        # HTML content
-        html_content = f"""
-        <html>
-        <head>
-            <style>
-                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                .header {{ background-color: #f8f8f8; padding: 10px; border-bottom: 1px solid #ddd; }}
-                .summary {{ background-color: #f9f9f9; padding: 15px; margin: 20px 0; border-left: 4px solid #ddd; }}
-                .article {{ margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee; }}
-                .article h3 {{ margin-top: 0; margin-bottom: 5px; }}
-                .article .meta {{ color: #777; font-size: 0.9em; margin-bottom: 8px; }}
-                .footer {{ margin-top: 30px; font-size: 0.8em; color: #777; text-align: center; }}
-                a {{ color: #4285f4; text-decoration: none; }}
-                a:hover {{ text-decoration: underline; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h2>Timeline Update: {topic}</h2>
-                    <p>Your {frequency} notification for timeline updates</p>
-                </div>
+    if not summary_text:
+        print(f"Error: No valid summary found for topic '{topic}'")
+        return False
+    
+    # Create email
+    msg = MIMEMultipart()
+    msg['From'] = "Loop News <noreply@loop-news.com>"
+    msg['To'] = recipient_email
+    
+    if frequency == 'hourly':
+        msg['Subject'] = f"Hourly Update: {topic} - {date_str} EST"
+    else:
+        msg['Subject'] = f"Daily Summary: {topic} - {date_str} EST"
+    
+    # Determine which date to display in the email
+    email_date_str = date_str
+    if frequency == 'daily' and summary_date == 'Yesterday' and yesterday_date:
+        email_date_str = yesterday_date
+    
+    # Create HTML for new articles section (for hourly emails)
+    new_articles_html = ""
+    if frequency == 'hourly' and new_articles:
+        new_articles_html = f"""
+        <div style="margin-bottom: 30px; padding: 15px; background-color: #f8f8f8; border-left: 4px solid #555;">
+          <h2 style="font-size: 18px; color: #555; margin-bottom: 15px;">Latest Updates ({len(new_articles)} new article{'s' if len(new_articles) > 1 else ''})</h2>
+          <ul style="padding-left: 20px; margin-bottom: 0;">
         """
         
-        # Add day summary if available
-        if 'day_summaries' in entry and 'Today' in entry['day_summaries'] and entry['day_summaries']['Today']:
-            today_summary = entry['day_summaries']['Today']
-            html_content += f"""
-                <div class="summary">
-                    <h3>Today's Summary</h3>
-                    <p>{today_summary}</p>
-                </div>
-            """
-            text_content += f"\nToday's Summary:\n{today_summary}\n\n"
-        
-        # Check if there are new articles to share
-        new_articles = []
-        if 'results' in entry and 'results' in entry['results']:
-            # Get most recent articles
-            sorted_articles = sorted(entry['results']['results'], key=extract_age_in_seconds)[:5]
+        for article in new_articles:
+            title = article.get('title', 'No title')
+            description = article.get('description', 'No description available')
+            url = article.get('url', '#')
+            age = article.get('age', 'Unknown time')
+            source = article.get('meta_url', {}).get('netloc', 'Unknown source')
             
-            if sorted_articles:
-                html_content += "<h3>Recent Updates</h3>"
-                text_content += "Recent Updates:\n"
-                
-                for article in sorted_articles:
-                    title = article.get('title', 'No title')
-                    description = article.get('description', 'No description available')
-                    url = article.get('url', '#')
-                    source = article.get('meta_url', {}).get('netloc', 'Unknown source')
-                    published = article.get('published_time', '')
-                    
-                    # Format date if available
-                    date_str = ""
-                    if published:
-                        try:
-                            date_obj = datetime.fromisoformat(published.replace('Z', '+00:00'))
-                            date_str = date_obj.strftime('%Y-%m-%d %H:%M')
-                        except:
-                            date_str = published
-                    
-                    html_content += f"""
-                    <div class="article">
-                        <h3><a href="{url}">{title}</a></h3>
-                        <div class="meta">From {source} {date_str}</div>
-                        <p>{description}</p>
-                    </div>
-                    """
-                    
-                    text_content += f"- {title}\n  {source} {date_str}\n  {description}\n  {url}\n\n"
+            new_articles_html += f"""
+            <li style="margin-bottom: 15px;">
+              <a href="{url}" style="font-weight: bold; color: #333; text-decoration: none;">{title}</a>
+              <div style="margin-top: 5px; color: #555; font-size: 13px;">
+                {source} • {age}
+              </div>
+              <div style="margin-top: 5px; line-height: 1.4;">
+                {description[:150]}{'...' if len(description) > 150 else ''}
+              </div>
+            </li>
+            """
         
-        # Add footer
-        html_content += f"""
-                <div class="footer">
-                    <p>View all updates on your <a href="{request.host_url}history/{topic}">timeline page</a>.</p>
-                    <p>This is an automated notification from the Timeline app.</p>
-                </div>
-            </div>
-        </body>
-        </html>
+        new_articles_html += """
+          </ul>
+        </div>
         """
+    
+    # Email body
+    html = f"""
+    <html>
+      <head></head>
+      <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+        <h1 style="font-size: 24px; color: #333; margin-bottom: 20px;">loop: {topic}</h1>
         
-        # Attach parts to message
-        part1 = MIMEText(text_content, "plain")
-        part2 = MIMEText(html_content, "html")
-        msg.attach(part1)
-        msg.attach(part2)
+        <div style="margin-bottom: 30px;">
+          <h2 style="font-size: 18px; color: #555; margin-bottom: 10px;">{summary_date}'s Summary ({email_date_str} EST)</h2>
+          <p style="line-height: 1.6;">{summary_text}</p>
+        </div>
         
-        # Send email
-        if smtp_server and sender_email and sender_password:
-            try:
-                context = ssl.create_default_context()
-                with smtplib.SMTP(smtp_server, smtp_port) as server:
-                    server.starttls(context=context)
-                    server.login(sender_email, sender_password)
-                    server.sendmail(sender_email, email, msg.as_string())
-                
-                # Update last sent time
-                if 'last_sent' not in entry['notifications']:
-                    entry['notifications']['last_sent'] = {}
-                
-                entry['notifications']['last_sent'][email] = datetime.now().isoformat()
-                
-                print(f"Successfully sent notification email for '{topic}' to {email}")
-                return True
-            except Exception as e:
-                print(f"Failed to send email: {e}")
-                return False
-        else:
-            print("SMTP settings missing, cannot send email")
-            return False
+        {new_articles_html}
+        
+        <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 14px; color: #777;">
+          <p>View full history at: <a href="http://loopnow.co/history/{topic}" style="color: #555;">View Details</a></p>
+          <p>Notification frequency: {frequency}. To change your settings, click the bell icon next to the topic name.</p>
+        </div>
+      </body>
+    </html>
+    """
+    
+    # Attach HTML content
+    msg.attach(MIMEText(html, 'html'))
+    
+    try:
+        # Print email to console for debugging
+        print(f"\n--- NOTIFICATION EMAIL ---")
+        print(f"To: {recipient_email}")
+        print(f"Subject: {msg['Subject']}")
+        print(f"Body preview: {summary_text[:100]}...")
+        if new_articles:
+            print(f"Including {len(new_articles)} new articles in the email")
+        print(f"--- END EMAIL ---\n")
+        
+        # Attempt to send the email using SMTP
+        try:
+            # You would replace these with your actual SMTP server details
+            # For Gmail, you need an app password if 2FA is enabled
+            smtp_server = "smtp.gmail.com"
+            port = 587  # For starttls
+            sender_email = "shantanu.kum97@gmail.com"  # Replace with a real email for production
+            password = "gqgajschaboevchb"  # You would need to use an app password for Gmail
+            
+            print(f"Connecting to SMTP server: {smtp_server}:{port}")
+            
+            # Create a secure SSL context
+            context = ssl.create_default_context()
+            
+            # Try to log in to server and send email
+            server = smtplib.SMTP(smtp_server, port)
+            server.ehlo()  # Can be omitted
+            print(f"Starting TLS connection")
+            server.starttls(context=context)  # Secure the connection
+            server.ehlo()  # Can be omitted
+            
+            # Send the email
+            print(f"Logging in as {sender_email}")
+            server.login(sender_email, password)
+            print(f"Sending email to {recipient_email}")
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+            print(f"Email sent successfully, closing connection")
+            server.quit()
+            
+            print(f"Email sent to {recipient_email} successfully")
+            return True
+            
+        except Exception as e:
+            print(f"Error sending email: {e}")
+            traceback.print_exc()
+            # Continue - we don't want to fail the notification process if email sending fails
+    
     except Exception as e:
-        print(f"Error preparing notification email: {e}")
+        print(f"Error preparing email: {e}")
         traceback.print_exc()
         return False
+    
+    return True
 
 # Schedule notification checks
 def schedule_notification_checks():
