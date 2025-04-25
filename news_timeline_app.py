@@ -1005,6 +1005,110 @@ def is_valid_summary(summary):
         return False
     return True
 
+def group_articles_by_topic_openai(articles, query=""):
+    """
+    Group articles into topics based on content similarity using OpenAI.
+    
+    Args:
+        articles: List of news articles
+        query: The search query used (for contextual grouping)
+        
+    Returns:
+        Dictionary with topic groups and their titles/summaries
+    """
+    if not OPENAI_AVAILABLE or not articles:
+        return None
+    
+    try:
+        # Prepare article data for OpenAI
+        article_data = []
+        for idx, article in enumerate(articles):
+            title = article.get('title', '')
+            desc = article.get('description', '')
+            source = article.get('meta_url', {}).get('netloc', 'Unknown source')
+            age = article.get('age', 'Unknown')
+            
+            article_data.append({
+                "id": idx,
+                "title": title, 
+                "description": desc,
+                "source": source,
+                "age": age
+            })
+        
+        # Create the prompt for OpenAI
+        messages = [
+            {"role": "system", "content": """You are an expert at organizing news articles into coherent topic groups. 
+Your task is to:
+1. Group similar articles into distinct topics
+2. Give each topic a concise, descriptive title (max 10 words)
+3. Write a brief 1-sentence summary for each topic group
+4. Place each article in exactly one group
+5. Create more restrictive themes rather than broad categories"""},
+            {"role": "user", "content": f"""Here are news articles about "{query}".
+Please group them into topics, with a concise title and brief summary for each group.
+Articles: {json.dumps(article_data, indent=2)}
+
+Return JSON in this exact format:
+{{
+  "topic_groups": [
+    {{
+      "title": "Concise topic title",
+      "summary": "Brief one-sentence summary of what this topic group is about",
+      "article_ids": [0, 3, 5]
+    }},
+    ...
+  ]
+}}"""}
+        ]
+        
+        # Call the OpenAI API
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini", # Use gpt-4.1-nano when available
+            messages=messages,
+            temperature=0.2,
+            max_tokens=1000,
+            response_format={"type": "json_object"}
+        )
+        
+        # Extract the response content
+        result = json.loads(response.choices[0].message.content)
+        
+        # Process the groups
+        topic_groups = []
+        for group in result.get("topic_groups", []):
+            article_ids = group.get("article_ids", [])
+            if not article_ids:
+                continue
+                
+            # Collect the articles for this group
+            group_articles = [articles[idx] for idx in article_ids if idx < len(articles)]
+            if not group_articles:
+                continue
+                
+            # Sort the articles by age
+            group_articles = sorted(group_articles, key=extract_age_in_seconds)
+            
+            # Create the topic group entry
+            newest_article = group_articles[0]
+            topic_groups.append({
+                'title': group.get("title", "Untitled Topic"),
+                'summary': group.get("summary", ""),
+                'articles': group_articles,
+                'count': len(group_articles),
+                'newest_age': newest_article.get('age', 'Unknown'),
+                'day_group': day_group_filter(newest_article)
+            })
+        
+        # Sort topic groups by the age of their newest article
+        topic_groups = sorted(topic_groups, key=lambda x: extract_age_in_seconds(x['articles'][0]))
+        
+        return topic_groups
+        
+    except Exception as e:
+        print(f"Error grouping articles with OpenAI: {str(e)}")
+        return None
+
 def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_summaries=None):
     """
     Group articles into topics based on content similarity.
@@ -1024,6 +1128,78 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
     # Initialize day_summaries if not provided
     if day_summaries is None:
         day_summaries = {}
+    
+    # Try to use OpenAI for more intelligent grouping if available
+    if OPENAI_AVAILABLE and MODEL_PROVIDER == "openai":
+        openai_groups = group_articles_by_topic_openai(articles, query)
+        if openai_groups:
+            print(f"Successfully grouped {len(openai_groups)} topics using OpenAI")
+            
+            # Add existing day summaries to the OpenAI-generated topic groups
+            for topic in openai_groups:
+                day = topic['day_group']
+                existing_summary = day_summaries.get(day)
+                topic['day_summary'] = existing_summary
+            
+            # Process day summaries similarly to the original function
+            days_needing_summaries = set()
+            for topic in openai_groups:
+                day = topic['day_group']
+                if not is_valid_summary(topic.get('day_summary')):
+                    if day not in days_needing_summaries:
+                        days_needing_summaries.add(day)
+            
+            # Generate summaries only for days that need them
+            if days_needing_summaries and ((MODEL_PROVIDER == "llama" and LLAMA_AVAILABLE and llama_model is not None) or 
+                                          (MODEL_PROVIDER == "openai" and OPENAI_AVAILABLE)):
+                # Group articles by day, but only for days that need new summaries
+                day_articles = {}
+                for topic in openai_groups:
+                    day = topic['day_group']
+                    if day in days_needing_summaries:
+                        if day not in day_articles:
+                            day_articles[day] = []
+                        day_articles[day].extend(topic['articles'])
+                
+                # Generate summaries for days that need them
+                for day, day_art in day_articles.items():
+                    if day in day_summaries and is_valid_summary(day_summaries[day]):
+                        print(f"Skipping summary generation for day: {day} (already valid)")
+                        continue
+                        
+                    print(f"Generating new summary for day: {day} using {MODEL_PROVIDER}")
+                    summary = summarize_daily_news(day_art, query)
+                    
+                    if is_valid_summary(summary):
+                        print(f"Successfully generated summary for {day}: {summary[:50]}...")
+                        day_summaries[day] = summary
+                        
+                        # Update topic groups with new summaries
+                        for topic in openai_groups:
+                            if topic['day_group'] == day:
+                                topic['day_summary'] = summary
+                        
+                        try:
+                            # Save summaries to history
+                            history = load_search_history()
+                            for key, entry in history.items():
+                                if entry.get('query') == query:
+                                    entry['day_summaries'] = day_summaries
+                                    save_search_history(history)
+                                    print(f"Saved new {day} summary to history for {query}")
+                                    break
+                        except Exception as e:
+                            print(f"Error saving summary to history: {e}")
+                    else:
+                        print(f"Failed to generate valid summary for day: {day}")
+            
+            topics_with_summaries = sum(1 for topic in openai_groups if is_valid_summary(topic.get('day_summary')))
+            print(f"Grouped {len(openai_groups)} topics with OpenAI, {topics_with_summaries} have summaries.")
+            
+            return openai_groups
+    
+    # Fall back to TF-IDF based approach if OpenAI grouping failed or is not available
+    print("Falling back to TF-IDF based grouping")
     
     # Extract title and description for content comparison
     article_contents = []
@@ -1164,7 +1340,7 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
     except Exception as e:
         print(f"Error grouping articles: {str(e)}")
         # Fallback: return each article as its own group if clustering fails
-        return [{'title': a.get('title', 'Untitled'), 'articles': [a], 'count': 1, 
+        return [{'title': a.get('title', 'Untitled Topic'), 'articles': [a], 'count': 1, 
                  'newest_age': a.get('age', 'Unknown'), 'day_group': day_group_filter(a)} 
                 for a in articles]
 
