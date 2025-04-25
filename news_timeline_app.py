@@ -1932,6 +1932,144 @@ def process_history_file(file_path, now, eastern, updated_files):
         print(f"Error processing history file {file_path}: {e}")
         traceback.print_exc()
 
+def send_notification_email(topic, entry, frequency, email):
+    """Send a notification email for a topic with new content"""
+    try:
+        print(f"Sending {frequency} notification email for '{topic}' to {email}")
+        
+        # Email settings
+        sender_email = app.config.get("SMTP_FROM_EMAIL", "notifications@example.com")
+        sender_password = app.config.get("SMTP_PASSWORD", "")
+        smtp_server = app.config.get("SMTP_SERVER", "smtp.gmail.com")
+        smtp_port = int(app.config.get("SMTP_PORT", 587))
+        
+        # Create email message
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Timeline Update: {topic}"
+        msg["From"] = sender_email
+        msg["To"] = email
+        
+        # Basic text content
+        text_content = f"Updates for your timeline: {topic}\n\n"
+        text_content += f"View the latest updates at {request.host_url}history/{topic}\n\n"
+        
+        # HTML content
+        html_content = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .header {{ background-color: #f8f8f8; padding: 10px; border-bottom: 1px solid #ddd; }}
+                .summary {{ background-color: #f9f9f9; padding: 15px; margin: 20px 0; border-left: 4px solid #ddd; }}
+                .article {{ margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee; }}
+                .article h3 {{ margin-top: 0; margin-bottom: 5px; }}
+                .article .meta {{ color: #777; font-size: 0.9em; margin-bottom: 8px; }}
+                .footer {{ margin-top: 30px; font-size: 0.8em; color: #777; text-align: center; }}
+                a {{ color: #4285f4; text-decoration: none; }}
+                a:hover {{ text-decoration: underline; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h2>Timeline Update: {topic}</h2>
+                    <p>Your {frequency} notification for timeline updates</p>
+                </div>
+        """
+        
+        # Add day summary if available
+        if 'day_summaries' in entry and 'Today' in entry['day_summaries'] and entry['day_summaries']['Today']:
+            today_summary = entry['day_summaries']['Today']
+            html_content += f"""
+                <div class="summary">
+                    <h3>Today's Summary</h3>
+                    <p>{today_summary}</p>
+                </div>
+            """
+            text_content += f"\nToday's Summary:\n{today_summary}\n\n"
+        
+        # Check if there are new articles to share
+        new_articles = []
+        if 'results' in entry and 'results' in entry['results']:
+            # Get most recent articles
+            sorted_articles = sorted(entry['results']['results'], key=extract_age_in_seconds)[:5]
+            
+            if sorted_articles:
+                html_content += "<h3>Recent Updates</h3>"
+                text_content += "Recent Updates:\n"
+                
+                for article in sorted_articles:
+                    title = article.get('title', 'No title')
+                    description = article.get('description', 'No description available')
+                    url = article.get('url', '#')
+                    source = article.get('meta_url', {}).get('netloc', 'Unknown source')
+                    published = article.get('published_time', '')
+                    
+                    # Format date if available
+                    date_str = ""
+                    if published:
+                        try:
+                            date_obj = datetime.fromisoformat(published.replace('Z', '+00:00'))
+                            date_str = date_obj.strftime('%Y-%m-%d %H:%M')
+                        except:
+                            date_str = published
+                    
+                    html_content += f"""
+                    <div class="article">
+                        <h3><a href="{url}">{title}</a></h3>
+                        <div class="meta">From {source} {date_str}</div>
+                        <p>{description}</p>
+                    </div>
+                    """
+                    
+                    text_content += f"- {title}\n  {source} {date_str}\n  {description}\n  {url}\n\n"
+        
+        # Add footer
+        html_content += f"""
+                <div class="footer">
+                    <p>View all updates on your <a href="{request.host_url}history/{topic}">timeline page</a>.</p>
+                    <p>This is an automated notification from the Timeline app.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Attach parts to message
+        part1 = MIMEText(text_content, "plain")
+        part2 = MIMEText(html_content, "html")
+        msg.attach(part1)
+        msg.attach(part2)
+        
+        # Send email
+        if smtp_server and sender_email and sender_password:
+            try:
+                context = ssl.create_default_context()
+                with smtplib.SMTP(smtp_server, smtp_port) as server:
+                    server.starttls(context=context)
+                    server.login(sender_email, sender_password)
+                    server.sendmail(sender_email, email, msg.as_string())
+                
+                # Update last sent time
+                if 'last_sent' not in entry['notifications']:
+                    entry['notifications']['last_sent'] = {}
+                
+                entry['notifications']['last_sent'][email] = datetime.now().isoformat()
+                
+                print(f"Successfully sent notification email for '{topic}' to {email}")
+                return True
+            except Exception as e:
+                print(f"Failed to send email: {e}")
+                return False
+        else:
+            print("SMTP settings missing, cannot send email")
+            return False
+    except Exception as e:
+        print(f"Error preparing notification email: {e}")
+        traceback.print_exc()
+        return False
+
 # Schedule notification checks
 def schedule_notification_checks():
     """Start a background thread to periodically check for notifications"""
