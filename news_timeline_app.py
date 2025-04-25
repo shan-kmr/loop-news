@@ -3435,12 +3435,12 @@ if __name__ == '__main__':
                         <h2>beyond the headline</h2>
                         <p>
                             traditional news suffers from a fundamental reductionism—breaking complex narratives into
-                            disconnected fragments that destroy context and coherence.
+                            disconnected fragments that destroy context and coherence. skewed distribution adds to the problem–we see what a select few want us to see.
                         </p>
                         <p>
                             loop challenges this paradigm by restoring these connections, presenting not isolated data points
                             but complete trajectories—a temporal map of events and their relationships across multiple
-                            dimensions of relevance. loop tracks trends, entities, and relationships across time–notifying you of immediate changes.
+                            dimensions of relevance. loop tracks trends, entities, and relationships across time–notifying you of immediate changes. your briefs are your own personal news feed–unrestricted by the constraints of publishers, advertisers, or the biases of the media.
                         </p>
                         <p>
                             my coarse take on antireductionism as a 17-year old <a href="https://docs.google.com/document/d/1GXAdOSCwvc_XALn1WTwRVDOdDcFC1lfeAx1WLTpyg9w/" target="_blank" style="font-weight: bold; text-decoration: underline;">here</a>.
