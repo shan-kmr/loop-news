@@ -3429,14 +3429,14 @@ if __name__ == '__main__':
                             its own form of scarcity—attention—the need for systems that value sequential, contextual, 
                             and verifiable information has never been more critical.
                         </p>
-                    </div>
-                    
-                    <div class="philosophy-section">
-                        <h2>beyond the headline</h2>
                         <p>
                             traditional news suffers from a fundamental reductionism—breaking complex narratives into
                             disconnected fragments that destroy context and coherence. skewed distribution adds to the problem–we see what a select few want us to see.
                         </p>
+                    </div>
+                    
+                    <div class="philosophy-section">
+                        <h2>beyond the headline</h2>
                         <p>
                             loop challenges this paradigm by restoring these connections, presenting not isolated data points
                             but complete trajectories—a temporal map of events and their relationships across multiple
@@ -3453,6 +3453,9 @@ if __name__ == '__main__':
                             the information landscape now operates with its own mens rea—a system designed to capture attention
                             without the ethical framework to ensure integrity. it's a subtle crime of modern media: presenting
                             partial truths as complete pictures. loop serves as a corrective measure, applying computational rigor to restore missing context.
+                        </p>
+                        <p>
+                            information lives across the news, social media, and the internet. add a brief and see it stitched together in real-time.
                         </p>
                     </div>
                     
