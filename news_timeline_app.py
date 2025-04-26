@@ -1874,7 +1874,7 @@ def raison_detre():
     history = load_search_history()
     
     if current_user.is_authenticated:
-    for key, entry in history.items():
+        for key, entry in history.items():
             history_entries.append(entry)
         # Sort by timestamp descending
         history_entries.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
