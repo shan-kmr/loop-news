@@ -4383,55 +4383,49 @@ if __name__ == '__main__':
             modal.style.display = 'flex';
         }
         
-        // Page loading indicator
-        document.addEventListener('DOMContentLoaded', function() {
-            // Create loading overlay element
-            const loadingOverlay = document.createElement('div');
-            loadingOverlay.className = 'page-loading-overlay';
-            loadingOverlay.style.display = 'none';
+        // Page loading indicator - improved implementation
+        function showLoadingOverlay() {
+            document.getElementById('pageLoadingOverlay').style.display = 'flex';
+        }
+        
+        // Capture all link clicks
+        document.addEventListener('click', function(e) {
+            // Check if the click is on a link
+            const linkElement = e.target.closest('a');
             
-            // Create spinner element
-            const spinner = document.createElement('div');
-            spinner.className = 'page-loading-spinner';
-            
-            // Add spinner to overlay
-            loadingOverlay.appendChild(spinner);
-            
-            // Add overlay to document
-            document.body.appendChild(loadingOverlay);
-            
-            // Show loading overlay before page navigation
-            document.addEventListener('click', function(e) {
-                // Check if the click is on a link or submit button
-                let target = e.target;
+            if (linkElement && !e.ctrlKey && !e.metaKey && !linkElement.target && 
+                linkElement.hostname === window.location.hostname) {
+                // Only for internal links not opening in new tabs
+                e.preventDefault(); // Prevent default navigation
+                showLoadingOverlay(); // Show overlay immediately
                 
-                // Find closest anchor or button if we clicked on a child element
-                const linkElement = target.closest('a');
-                const buttonElement = target.closest('button[type="submit"]');
-                const formElement = target.closest('form');
-                
-                if (linkElement && !e.ctrlKey && !e.metaKey && !linkElement.target) {
-                    // Regular link click (not opening in new tab)
-                    loadingOverlay.style.display = 'flex';
-                } else if (buttonElement && formElement) {
-                    // Form submission
-                    loadingOverlay.style.display = 'flex';
-                }
-            });
+                // Brief delay to ensure overlay appears, then navigate
+                setTimeout(function() {
+                    window.location.href = linkElement.href;
+                }, 50);
+            }
+        });
+        
+        // Capture form submissions
+        document.addEventListener('submit', function(e) {
+            const form = e.target;
             
-            // Show loading overlay on form submission
-            document.querySelectorAll('form').forEach(form => {
-                form.addEventListener('submit', function() {
-                    loadingOverlay.style.display = 'flex';
-                });
-            });
-            
-            // Add event for browser back/forward navigation
-            window.addEventListener('beforeunload', function() {
-                loadingOverlay.style.display = 'flex';
-            });
+            // Only handle forms that navigate (not AJAX forms)
+            if (!form.hasAttribute('data-ajax')) {
+                showLoadingOverlay();
+            }
+        });
+        
+        // Show overlay on page unload
+        window.addEventListener('beforeunload', function() {
+            showLoadingOverlay();
         });
     </script>
+    
+    <!-- Page loading overlay -->
+    <div id="pageLoadingOverlay" class="page-loading-overlay" style="display: none;">
+        <div class="page-loading-spinner"></div>
+    </div>
 </body>
 </html>''')
 
