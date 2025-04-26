@@ -1148,6 +1148,7 @@ def history_item(query):
         try:
             # Initialize API if needed
             global brave_api
+            global reddit_api
             if brave_api is None:
                 brave_api_key = app.config.get("BRAVE_API_KEY")
                 if brave_api_key:
@@ -1155,11 +1156,20 @@ def history_item(query):
                 else:
                     return render_template('error.html', error="BRAVE_API_KEY not set", user=current_user)
             
+            # Initialize Reddit API if needed
+            if reddit_api is None:
+                try:
+                    reddit_api = RedditAPI()
+                    reddit_api.init()
+                except Exception as e:
+                    print(f"Warning: Could not initialize Reddit API: {str(e)}")
+                    print("Reddit content will not be available")
+            
             # Default values
             count = 10
             freshness = 'pw'
             
-            # Make a new API call
+            # Make a new API call for news
             print(f"Making new API call for '{query}'")
             results = brave_api.search_news(
                 query=query,
@@ -1169,46 +1179,73 @@ def history_item(query):
             search_time = datetime.now()
             current_query = query
             
-            # Process results
-            if results and 'results' in results:
-                # Sort all articles by date for proper day-based organization
-                sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
-                day_summaries = {}  # Initialize for new searches
-                topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, query, day_summaries)
-                
-                # Sort topic groups by day priority to ensure consistent ordering in the timeline
-                day_priority = {
-                    "Today": 1,
-                    "Yesterday": 2,
-                    "2 days ago": 3,
-                    "3 days ago": 4,
-                    "4 days ago": 5,
-                    "5 days ago": 6,
-                    "6 days ago": 7,
-                    "1 week ago": 8,
-                    "2 weeks ago": 9,
-                    "1 month ago": 10
-                }
-                
-                topic_groups = sorted(topic_groups, key=lambda x: (
-                    day_priority.get(x['day_group'], 999),  # First sort by day priority
-                    extract_age_in_seconds(x['articles'][0]) if x.get('articles') else 0  # Then by article age within the day
-                ))
-                
-                # Cache the results
-                cache_key = f"{query}_{count}_{freshness}"
-                history[cache_key] = {
-                    'query': query,
-                    'count': count,
-                    'freshness': freshness,
-                    'timestamp': search_time.isoformat(),
-                    'results': results,
-                    'day_summaries': day_summaries,
-                    'topic_groups': topic_groups,  # Store the topic groups for future use
-                    'search_time': datetime.now().timestamp()  # Add search_time for proper sorting
-                }
-                save_search_history(history)
-                print(f"Cached new results for query: '{query}' with {len(day_summaries)} summaries")
+            # Get Reddit results if available
+            if reddit_api is not None:
+                try:
+                    # Map freshness to time_filter for Reddit
+                    time_filter_map = {
+                        'pd': 'day',
+                        'pw': 'week',
+                        'pm': 'month',
+                        'py': 'year',
+                    }
+                    reddit_time_filter = time_filter_map.get(freshness, 'week')
+                    
+                    # Get Reddit results
+                    reddit_results = reddit_api.search(
+                        query=query,
+                        count=count,
+                        time_filter=reddit_time_filter
+                    )
+                    print(f"Got {len(reddit_results.get('results', []))} Reddit results for '{query}'")
+                    
+                    # Merge Reddit results with Brave results
+                    if reddit_results and 'results' in reddit_results and len(reddit_results['results']) > 0:
+                        results['results'].extend(reddit_results['results'])
+                        print(f"Added {len(reddit_results['results'])} Reddit results to search results (total: {len(results['results'])})")
+                except Exception as e:
+                    print(f"Error getting Reddit results: {str(e)}")
+            
+            # Generate day summaries
+            sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
+            day_summaries = {}
+            
+            # Group articles by day
+            articles_by_day = {}
+            
+            # Sort topic groups by day priority to ensure consistent ordering in the timeline
+            day_priority = {
+                "Today": 1,
+                "Yesterday": 2,
+                "2 days ago": 3,
+                "3 days ago": 4,
+                "4 days ago": 5,
+                "5 days ago": 6,
+                "6 days ago": 7,
+                "1 week ago": 8,
+                "2 weeks ago": 9,
+                "1 month ago": 10
+            }
+            
+            topic_groups = sorted(topic_groups, key=lambda x: (
+                day_priority.get(x['day_group'], 999),  # First sort by day priority
+                extract_age_in_seconds(x['articles'][0]) if x.get('articles') else 0  # Then by article age within the day
+            ))
+            
+            # Cache the results
+            cache_key = f"{query}_{count}_{freshness}"
+            history[cache_key] = {
+                'query': query,
+                'count': count,
+                'freshness': freshness,
+                'timestamp': search_time.isoformat(),
+                'results': results,
+                'day_summaries': day_summaries,
+                'topic_groups': topic_groups,  # Store the topic groups for future use
+                'search_time': datetime.now().timestamp()  # Add search_time for proper sorting
+            }
+            save_search_history(history)
+            print(f"Cached new results for query: '{query}' with {len(day_summaries)} summaries")
         except Exception as e:
             print(f"Error performing search: {str(e)}")
             # Ensure day_summaries is still defined in case of error
