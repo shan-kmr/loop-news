@@ -1061,6 +1061,26 @@ def history_item(query):
                         has_summary = day in day_summaries and is_valid_summary(day_summaries[day])
                         print(f"  - {day}: {count} topics, has summary: {has_summary}")
                     
+                    # Sort topic groups by day priority to ensure consistent ordering in the timeline
+                    # This ensures Today comes first, followed by Yesterday, etc.
+                    day_priority = {
+                        "Today": 1,
+                        "Yesterday": 2,
+                        "2 days ago": 3,
+                        "3 days ago": 4,
+                        "4 days ago": 5,
+                        "5 days ago": 6,
+                        "6 days ago": 7,
+                        "1 week ago": 8,
+                        "2 weeks ago": 9,
+                        "1 month ago": 10
+                    }
+                    
+                    topic_groups = sorted(topic_groups, key=lambda x: (
+                        day_priority.get(x['day_group'], 999),  # First sort by day priority
+                        extract_age_in_seconds(x['articles'][0])  # Then by article age within the day
+                    ))
+                    
                     # Save the updated day_summaries back to the entry to ensure they're stored in the cache
                     # This is important for ensuring summaries persist between page visits
                     if 'day_summaries' not in entry or entry['day_summaries'] != day_summaries:
@@ -1116,6 +1136,25 @@ def history_item(query):
                 sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
                 day_summaries = {}  # Initialize for new searches
                 topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, query, day_summaries)
+                
+                # Sort topic groups by day priority to ensure consistent ordering in the timeline
+                day_priority = {
+                    "Today": 1,
+                    "Yesterday": 2,
+                    "2 days ago": 3,
+                    "3 days ago": 4,
+                    "4 days ago": 5,
+                    "5 days ago": 6,
+                    "6 days ago": 7,
+                    "1 week ago": 8,
+                    "2 weeks ago": 9,
+                    "1 month ago": 10
+                }
+                
+                topic_groups = sorted(topic_groups, key=lambda x: (
+                    day_priority.get(x['day_group'], 999),  # First sort by day priority
+                    extract_age_in_seconds(x['articles'][0])  # Then by article age within the day
+                ))
                 
                 # Cache the results
                 cache_key = f"{query}_{count}_{freshness}"
@@ -1201,9 +1240,11 @@ def is_valid_summary(summary):
 def group_articles_by_topic_openai(articles, query=""):
     """
     Group articles into topics based on content similarity using OpenAI.
+    NOTE: This function should only be called with articles from a single day
+    to maintain day boundary enforcement.
     
     Args:
-        articles: List of news articles
+        articles: List of news articles (all from the SAME DAY)
         query: The search query used (for contextual grouping)
         
     Returns:
@@ -1213,6 +1254,18 @@ def group_articles_by_topic_openai(articles, query=""):
         return None
     
     try:
+        # Check that all articles are from the same day
+        if len(articles) > 0:
+            # Get the day of the first article as reference
+            expected_day = day_group_filter(articles[0])
+            
+            # Verify all articles are from the same day
+            for article in articles:
+                article_day = day_group_filter(article)
+                if article_day != expected_day:
+                    print(f"WARNING: group_articles_by_topic_openai received articles from different days: {article_day} vs {expected_day}")
+                    # We'll continue processing but enforce the day in the result
+        
         # Prepare article data for OpenAI
         article_data = []
         for idx, article in enumerate(articles):
@@ -1269,6 +1322,10 @@ Return JSON in this exact format:
         
         # Process the groups
         topic_groups = []
+        
+        # Get the common day for all articles - use the day of the first article
+        common_day = day_group_filter(articles[0]) if articles else "Unknown"
+        
         for group in result.get("topic_groups", []):
             article_ids = group.get("article_ids", [])
             if not article_ids:
@@ -1290,7 +1347,7 @@ Return JSON in this exact format:
                 'articles': group_articles,
                 'count': len(group_articles),
                 'newest_age': newest_article.get('age', 'Unknown'),
-                'day_group': day_group_filter(newest_article)
+                'day_group': common_day  # Explicitly set to maintain day boundary
             })
         
         # Sort topic groups by the age of their newest article
@@ -1305,6 +1362,7 @@ Return JSON in this exact format:
 def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_summaries=None):
     """
     Group articles into topics based on content similarity.
+    CRITICAL: Enforce day boundaries - never mix articles from different days in the same topic.
     
     Args:
         articles: List of news articles
@@ -1322,7 +1380,7 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
     if day_summaries is None:
         day_summaries = {}
     
-    # First, organize articles by day for proper chronological grouping
+    # CRITICAL CHANGE: First, organize articles by day to enforce day boundaries
     day_grouped_articles = {}
     for article in articles:
         day = day_group_filter(article)
@@ -1331,7 +1389,7 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
         day_grouped_articles[day].append(article)
     
     # Sort days in order of recency (Today, Yesterday, etc.)
-    sorted_days = sorted(day_grouped_articles.keys(), key=lambda d: {
+    day_priority = {
         "Today": 1,
         "Yesterday": 2,
         "2 days ago": 3,
@@ -1342,67 +1400,91 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
         "1 week ago": 8,
         "2 weeks ago": 9,
         "1 month ago": 10
-    }.get(d, 999))
+    }
+    sorted_days = sorted(day_grouped_articles.keys(), key=lambda d: day_priority.get(d, 999))
+    
+    # Print day distribution for debugging
+    print(f"Articles by day before grouping:")
+    for day in sorted_days:
+        print(f"  - {day}: {len(day_grouped_articles[day])} articles")
+    
+    # Initialize final topic groups list - will contain topics from all days
+    final_topic_groups = []
     
     # Try to use OpenAI for more intelligent grouping if available
+    # But still enforce day boundaries by processing each day separately
     if OPENAI_AVAILABLE and MODEL_PROVIDER == "openai":
-        openai_groups = group_articles_by_topic_openai(articles, query)
-        if openai_groups:
-            print(f"Successfully grouped {len(openai_groups)} topics using OpenAI")
-            
-            # Ensure OpenAI groups respect day boundaries by fixing day groups
-            # This ensures articles are properly shown under their correct day
-            for topic in openai_groups:
-                # Sort articles within the group by age
-                topic['articles'] = sorted(topic['articles'], key=extract_age_in_seconds)
+        print("Using OpenAI for topic grouping, enforcing day boundaries...")
+        
+        # Process each day separately with OpenAI to maintain day boundaries
+        for day in sorted_days:
+            day_articles = day_grouped_articles[day]
+            if not day_articles:
+                continue
                 
-                # Get the day of the newest article to represent the group
-                newest_article = topic['articles'][0]
-                topic['day_group'] = day_group_filter(newest_article)
+            print(f"Processing {len(day_articles)} articles for day: {day}")
+            
+            # Use OpenAI to group just this day's articles
+            day_openai_groups = group_articles_by_topic_openai(day_articles, query)
+            
+            if day_openai_groups:
+                # Set the day group explicitly for all topics from this day
+                for topic in day_openai_groups:
+                    topic['day_group'] = day
+                    
+                    # Add the day's summary to all topics from this day
+                    existing_summary = day_summaries.get(day)
+                    topic['day_summary'] = existing_summary
                 
-                # Add existing day summaries to the OpenAI-generated topic groups
-                day = topic['day_group']
-                existing_summary = day_summaries.get(day)
-                topic['day_summary'] = existing_summary
-            
-            # Sort topic groups by the age of their newest article
-            openai_groups = sorted(openai_groups, key=lambda x: extract_age_in_seconds(x['articles'][0]))
-            
-            # Process day summaries similarly to the original function
+                # Add this day's topics to our final list
+                final_topic_groups.extend(day_openai_groups)
+                print(f"Added {len(day_openai_groups)} OpenAI-grouped topics for {day}")
+            else:
+                # Fallback to simple grouping if OpenAI failed for this day
+                print(f"OpenAI grouping failed for {day}, falling back to simple grouping")
+                
+                # Create a single topic for each article as a fallback
+                for article in day_articles:
+                    final_topic_groups.append({
+                        'title': article.get('title', 'Untitled Topic'),
+                        'articles': [article],
+                        'count': 1,
+                        'newest_age': article.get('age', 'Unknown'),
+                        'day_group': day,
+                        'day_summary': day_summaries.get(day)
+                    })
+        
+        # If we successfully created any topics with OpenAI, process summaries and return
+        if final_topic_groups:
+            # Process day summaries - generate any that are missing
             days_needing_summaries = set()
-            for topic in openai_groups:
+            for topic in final_topic_groups:
                 day = topic['day_group']
                 if not is_valid_summary(topic.get('day_summary')):
                     if day not in days_needing_summaries:
                         days_needing_summaries.add(day)
             
-            # Generate summaries only for days that need them
+            # Generate summaries for days that need them
             if days_needing_summaries and ((MODEL_PROVIDER == "llama" and LLAMA_AVAILABLE and llama_model is not None) or 
                                           (MODEL_PROVIDER == "openai" and OPENAI_AVAILABLE)):
-                # Group articles by day, but only for days that need new summaries
-                day_articles = {}
-                for topic in openai_groups:
-                    day = topic['day_group']
-                    if day in days_needing_summaries:
-                        if day not in day_articles:
-                            day_articles[day] = []
-                        day_articles[day].extend(topic['articles'])
-                
-                # Generate summaries for days that need them
-                for day, day_art in day_articles.items():
+                for day in days_needing_summaries:
                     if day in day_summaries and is_valid_summary(day_summaries[day]):
                         print(f"Skipping summary generation for day: {day} (already valid)")
                         continue
                         
                     print(f"Generating new summary for day: {day} using {MODEL_PROVIDER}")
-                    summary = summarize_daily_news(day_art, query)
+                    day_articles = day_grouped_articles.get(day, [])
+                    if not day_articles:
+                        continue
+                        
+                    summary = summarize_daily_news(day_articles, query)
                     
                     if is_valid_summary(summary):
                         print(f"Successfully generated summary for {day}: {summary[:50]}...")
                         day_summaries[day] = summary
                         
-                        # Update topic groups with new summaries
-                        for topic in openai_groups:
+                        # Update all topics from this day with the new summary
+                        for topic in final_topic_groups:
                             if topic['day_group'] == day:
                                 topic['day_summary'] = summary
                         
@@ -1417,25 +1499,25 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
                                     break
                         except Exception as e:
                             print(f"Error saving summary to history: {e}")
-                    else:
-                        print(f"Failed to generate valid summary for day: {day}")
             
-            topics_with_summaries = sum(1 for topic in openai_groups if is_valid_summary(topic.get('day_summary')))
-            print(f"Grouped {len(openai_groups)} topics with OpenAI, {topics_with_summaries} have summaries.")
+            topics_with_summaries = sum(1 for topic in final_topic_groups if is_valid_summary(topic.get('day_summary')))
+            print(f"Created {len(final_topic_groups)} total topics across all days, {topics_with_summaries} have summaries.")
             
-            return openai_groups
+            # Return the final list with all days' topics
+            return final_topic_groups
     
-    # Fall back to TF-IDF based approach if OpenAI grouping failed or is not available
-    print("Falling back to TF-IDF based grouping")
+    # Fallback to TF-IDF based approach - processing each day separately
+    print("Using TF-IDF for topic grouping, enforcing day boundaries...")
     
-    # Initialize the final list of topic groups
-    final_topic_groups = []
-    
-    # Process articles day by day to maintain chronological organization
+    # Process each day separately with TF-IDF to maintain day boundaries
     for day in sorted_days:
         day_articles = day_grouped_articles[day]
+        if not day_articles:
+            continue
+            
+        print(f"Processing {len(day_articles)} articles for day: {day}")
         
-        # Extract title and description for content comparison
+        # Extract title and description for content comparison - only for this day's articles
         article_contents = []
         for article in day_articles:
             title = article.get('title', '')
@@ -1454,7 +1536,7 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
                 # Compute cosine similarity
                 similarity_matrix = cosine_similarity(tfidf_matrix)
                 
-                # Group articles based on similarity
+                # Group articles based on similarity - only within this day
                 visited = [False] * len(day_articles)
                 
                 for i in range(len(day_articles)):
@@ -1464,37 +1546,24 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
                     visited[i] = True
                     group = [day_articles[i]]
                     
-                    # Find similar articles
+                    # Find similar articles - only looking at this day's articles
                     for j in range(i+1, len(day_articles)):
                         if not visited[j] and similarity_matrix[i, j] >= similarity_threshold:
                             group.append(day_articles[j])
                             visited[j] = True
                     
-                    # Only add groups with more than one article
-                    if len(group) > 1:
-                        # Sort group by age
-                        group = sorted(group, key=extract_age_in_seconds)
-                        
-                        # Generate a topic title from the newest article
-                        newest_article = group[0]
-                        topic_title = newest_article.get('title', 'Untitled Topic')
-                        
-                        day_topic_groups.append({
-                            'title': topic_title,
-                            'articles': group,
-                            'count': len(group),
-                            'newest_age': newest_article.get('age', 'Unknown'),
-                            'day_group': day  # Use the current day
-                        })
-                    else:
-                        # Add as a single article topic
-                        day_topic_groups.append({
-                            'title': group[0].get('title', 'Untitled Topic'),
-                            'articles': group,
-                            'count': 1,
-                            'newest_age': group[0].get('age', 'Unknown'),
-                            'day_group': day  # Use the current day
-                        })
+                    # Create a topic for this group - explicitly setting the day
+                    group = sorted(group, key=extract_age_in_seconds)
+                    newest_article = group[0]
+                    topic_title = newest_article.get('title', 'Untitled Topic')
+                    
+                    day_topic_groups.append({
+                        'title': topic_title,
+                        'articles': group,
+                        'count': len(group),
+                        'newest_age': newest_article.get('age', 'Unknown'),
+                        'day_group': day  # Explicitly set the day to maintain boundaries
+                    })
             else:
                 # For a single article, just add it as its own topic
                 for article in day_articles:
@@ -1503,16 +1572,17 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
                         'articles': [article],
                         'count': 1,
                         'newest_age': article.get('age', 'Unknown'),
-                        'day_group': day  # Use the current day
+                        'day_group': day  # Explicitly set the day
                     })
             
-            # Add existing summaries for this day
+            # Add existing summary for this day to all topics from this day
             existing_summary = day_summaries.get(day)
             for topic in day_topic_groups:
                 topic['day_summary'] = existing_summary
             
-            # Add this day's topic groups to the final list
+            # Add this day's topics to our final list
             final_topic_groups.extend(day_topic_groups)
+            print(f"Added {len(day_topic_groups)} TF-IDF grouped topics for {day}")
             
         except Exception as e:
             print(f"Error during TF-IDF grouping for day {day}: {str(e)}")
@@ -1527,65 +1597,52 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
                     'day_summary': day_summaries.get(day)
                 })
     
-    # Sort topics within each day by age
-    final_topic_groups = sorted(final_topic_groups, key=lambda x: extract_age_in_seconds(x['articles'][0]))
-    
-    # Track days that need summaries
+    # Process day summaries - generate any that are missing
     days_needing_summaries = set()
-    
-    # Check which days need summaries
     for topic in final_topic_groups:
         day = topic['day_group']
         if not is_valid_summary(topic.get('day_summary')):
             if day not in days_needing_summaries:
                 days_needing_summaries.add(day)
-        else:
-            print(f"Using existing summary for day: {day}")
     
-    # Only generate new summaries if needed and if models are available
+    # Generate summaries for days that need them
     if days_needing_summaries and ((MODEL_PROVIDER == "llama" and LLAMA_AVAILABLE and llama_model is not None) or 
                                    (MODEL_PROVIDER == "openai" and OPENAI_AVAILABLE)):
-        # Use the day-grouped articles we already have
         for day in days_needing_summaries:
-            # Skip days that have valid summaries (this is an additional safeguard)
             if day in day_summaries and is_valid_summary(day_summaries[day]):
                 print(f"Skipping summary generation for day: {day} (already valid)")
                 continue
                 
-            day_articles_for_summary = day_grouped_articles.get(day, [])
-            if not day_articles_for_summary:
+            print(f"Generating new summary for day: {day} using {MODEL_PROVIDER}")
+            day_articles = day_grouped_articles.get(day, [])
+            if not day_articles:
                 continue
                 
-            print(f"Generating new summary for day: {day} using {MODEL_PROVIDER}")
-            summary = summarize_daily_news(day_articles_for_summary, query)
+            summary = summarize_daily_news(day_articles, query)
             
-            # Only update if we got a valid summary
             if is_valid_summary(summary):
                 print(f"Successfully generated summary for {day}: {summary[:50]}...")
                 day_summaries[day] = summary
                 
-                # Update topic groups with new summaries
+                # Update all topics from this day with the new summary
                 for topic in final_topic_groups:
                     if topic['day_group'] == day:
                         topic['day_summary'] = summary
                 
                 try:
-                    # Immediately save summaries to history
+                    # Save summaries to history
                     history = load_search_history()
                     for key, entry in history.items():
                         if entry.get('query') == query:
                             entry['day_summaries'] = day_summaries
                             save_search_history(history)
-                            print(f"Immediately saved new {day} summary to history for {query}")
+                            print(f"Saved new {day} summary to history for {query}")
                             break
                 except Exception as e:
                     print(f"Error saving summary to history: {e}")
-            else:
-                print(f"Failed to generate valid summary for day: {day}")
     
-    # Count how many topics have summaries
     topics_with_summaries = sum(1 for topic in final_topic_groups if is_valid_summary(topic.get('day_summary')))
-    print(f"Grouped {len(final_topic_groups)} topics with TF-IDF, {topics_with_summaries} have summaries.")
+    print(f"Created {len(final_topic_groups)} total topics across all days, {topics_with_summaries} have summaries.")
     
     return final_topic_groups
 
