@@ -349,26 +349,33 @@ def update_current_day_results(query, count, freshness, old_results):
             'h': 3600           # 1 hour (fallback)
         }.get(refresh_freshness, 604800)  # Default to 1 week if unknown
         
-        # Categorize old articles
-        articles_to_keep = []
-        existing_articles_in_window = []
+        # CRITICAL FIX: Only update TODAY's content, preserving Yesterday and older content completely
+        # Categorize old articles by day group to ensure preservation
+        articles_by_day = {}
         
+        # First, organize all old articles by day
         for article in old_articles:
-            age_seconds = extract_age_in_seconds(article)
-            
-            # Keep very old articles (older than our refresh window)
-            if age_seconds > cutoff_seconds:
-                articles_to_keep.append(article)
-            else:
-                # Keep track of articles within the refresh window (we'll keep these too)
-                existing_articles_in_window.append(article)
+            day_group = day_group_filter(article)
+            if day_group not in articles_by_day:
+                articles_by_day[day_group] = []
+            articles_by_day[day_group].append(article)
+        
+        # We only want to replace articles from 'Today', keep all older articles intact
+        articles_to_keep = []
+        for day, articles in articles_by_day.items():
+            if day != "Today":
+                # Keep ALL articles from yesterday and older days
+                articles_to_keep.extend(articles)
+                print(f"Preserving {len(articles)} articles from {day}")
+        
+        # Keep track of articles within the Today window that we'll refresh
+        existing_today_articles = articles_by_day.get("Today", [])
         
         # Log what we're doing
         print(f"Refreshing articles for '{query}' using freshness: {refresh_freshness}")
-        print(f"Keeping {len(articles_to_keep)} older articles beyond the refresh window")
-        print(f"Looking for new articles to add to {len(existing_articles_in_window)} existing articles within the window")
+        print(f"Keeping {len(articles_to_keep)} older articles (Yesterday and before)")
+        print(f"Refreshing {len(existing_today_articles)} Today articles")
         
-        # Combine older articles with fresh results
         # De-duplicate articles by URL to prevent duplicates
         seen_urls = set()
         combined_articles = []
@@ -376,14 +383,21 @@ def update_current_day_results(query, count, freshness, old_results):
         # Track which days have new articles added (for summary regeneration)
         days_with_new_articles = set()
         
-        # First add all existing articles in window (preserve what we've already shown)
-        for article in existing_articles_in_window:
+        # First add all preserved older articles (keep everything from before Today)
+        for article in articles_to_keep:
             url = article.get('url', '')
             if url:
                 seen_urls.add(url)
                 combined_articles.append(article)
         
-        # Then add new articles that aren't already present
+        # Then add existing Today articles (preserve what we've already shown today)
+        for article in existing_today_articles:
+            url = article.get('url', '')
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                combined_articles.append(article)
+        
+        # Finally add new articles that aren't already present
         new_articles_added = 0
         for article in new_articles:
             url = article.get('url', '')
@@ -395,13 +409,6 @@ def update_current_day_results(query, count, freshness, old_results):
                 # Track which day this article belongs to for summary regeneration
                 day_group = day_group_filter(article)
                 days_with_new_articles.add(day_group)
-        
-        # Finally add the older articles
-        for article in articles_to_keep:
-            url = article.get('url', '')
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                combined_articles.append(article)
         
         print(f"Added {new_articles_added} new unique articles to the results")
         if days_with_new_articles:
@@ -823,10 +830,94 @@ def history():
                               active_tab="history",
                               user=current_user)
 
+def repair_history_file():
+    """
+    Repairs the history file by fixing inconsistencies in the data structure.
+    Especially focuses on ensuring yesterday's data is properly preserved.
+    """
+    try:
+        # Load the current history
+        history = load_search_history()
+        
+        # Set to track if we made any changes
+        changes_made = False
+        
+        # Check each entry and fix common issues
+        for key, entry in history.items():
+            # Ensure day_summaries exists
+            if 'day_summaries' not in entry or entry['day_summaries'] is None:
+                entry['day_summaries'] = {}
+                print(f"Fixed missing day_summaries for entry: {entry.get('query', 'unknown')}")
+                changes_made = True
+                
+            # Ensure results structure is complete
+            if 'results' in entry and entry['results'] is not None:
+                # Check that all articles have day_group information
+                if 'results' in entry['results'] and entry['results']['results'] is not None:
+                    articles_fixed = 0
+                    articles_by_day = {}
+                    
+                    # Group articles by day
+                    for article in entry['results']['results']:
+                        # Make sure each article has an age
+                        if 'age' not in article:
+                            article['age'] = 'Unknown'
+                            articles_fixed += 1
+                            
+                        # Count articles by day
+                        day = day_group_filter(article)
+                        if day not in articles_by_day:
+                            articles_by_day[day] = 0
+                        articles_by_day[day] += 1
+                    
+                    # Debug info
+                    print(f"Entry '{entry.get('query', 'unknown')}' has articles for days: {', '.join(articles_by_day.keys())}")
+                    
+                    # Check if we have yesterday's data but no summary - this is a common issue
+                    if 'Yesterday' in articles_by_day and ('Yesterday' not in entry['day_summaries'] or not is_valid_summary(entry['day_summaries'].get('Yesterday'))):
+                        # Find yesterday's articles
+                        yesterday_articles = [a for a in entry['results']['results'] if day_group_filter(a) == 'Yesterday']
+                        
+                        if yesterday_articles:
+                            print(f"Fixing missing Yesterday summary for query: '{entry.get('query', 'unknown')}' ({len(yesterday_articles)} articles)")
+                            try:
+                                yesterday_summary = summarize_daily_news(yesterday_articles, entry.get('query', ''))
+                                if is_valid_summary(yesterday_summary):
+                                    entry['day_summaries']['Yesterday'] = yesterday_summary
+                                    print(f"Generated new Yesterday summary: {yesterday_summary[:50]}...")
+                                    changes_made = True
+                            except Exception as e:
+                                print(f"Error generating Yesterday summary: {str(e)}")
+                    
+                    # Check if we have any days with articles but no summaries
+                    for day in articles_by_day.keys():
+                        if day not in entry['day_summaries'] or not is_valid_summary(entry['day_summaries'].get(day)):
+                            print(f"Missing summary for day '{day}' with {articles_by_day[day]} articles")
+                    
+                    if articles_fixed > 0:
+                        print(f"Fixed {articles_fixed} articles with missing age data")
+                        changes_made = True
+        
+        # Save changes if needed
+        if changes_made:
+            save_search_history(history)
+            print("Saved repaired history file")
+            return True
+        else:
+            print("No issues found in history file")
+            return False
+            
+    except Exception as e:
+        print(f"Error repairing history file: {str(e)}")
+        return False
+
 @app.route('/history/<path:query>', methods=['GET'])
 @login_required
 def history_item(query):
     """View to display a specific history item."""
+    # Try to repair any inconsistencies in the history file
+    repair_history_file()
+    
     # Load history
     history = load_search_history()
     day_summaries = {}  # Initialize day_summaries with a default empty dictionary
@@ -882,6 +973,13 @@ def history_item(query):
                 if day_summaries is None:
                     day_summaries = {}
                 
+                # Print out day summaries for debugging
+                if day_summaries:
+                    print(f"Found existing day summaries: {', '.join(day_summaries.keys())}")
+                    for day, summary in day_summaries.items():
+                        is_valid = is_valid_summary(summary)
+                        print(f"  - {day}: {'Valid' if is_valid else 'Invalid'} summary")
+                
                 # Determine if we need to refresh based on time or force flag
                 needs_refresh = force_refresh or (time_diff.total_seconds() > 60 * 60)  # 1 hour
                 
@@ -897,11 +995,11 @@ def history_item(query):
                         search_time = datetime.now()
                         
                         # If we have days with new articles, clear their summaries to force regeneration
-                        if days_with_new_articles and 'day_summaries' in entry:
+                        if days_with_new_articles and day_summaries:
                             print(f"Clearing summaries for days with new content: {', '.join(days_with_new_articles)}")
                             for day in days_with_new_articles:
-                                if day in entry['day_summaries']:
-                                    entry['day_summaries'][day] = None
+                                if day in day_summaries:
+                                    day_summaries[day] = None
                     else:
                         # Even if results are the same, update the timestamp
                         search_time = datetime.now()
@@ -909,6 +1007,11 @@ def history_item(query):
                     # Update the cache with refreshed results while preserving historical data
                     entry['results'] = results
                     entry['timestamp'] = search_time.isoformat()
+                    
+                    # Ensure day_summaries is saved back to the entry
+                    if 'day_summaries' not in entry or entry['day_summaries'] != day_summaries:
+                        entry['day_summaries'] = day_summaries
+                    
                     save_search_history(history)
                 else:
                     print(f"Using cached results for '{query}' from {cached_time}, {int(time_diff.total_seconds() / 60)} minutes old")
@@ -924,6 +1027,19 @@ def history_item(query):
                 
                 print(f"Found {valid_summaries} valid day summaries out of {len(day_summaries)} total in cache")
                 
+                # Debug: Print the count of articles for each day
+                if results and 'results' in results:
+                    articles_by_day = {}
+                    for article in results['results']:
+                        day = day_group_filter(article)
+                        if day not in articles_by_day:
+                            articles_by_day[day] = 0
+                        articles_by_day[day] += 1
+                    
+                    print("Article counts by day:")
+                    for day, count in articles_by_day.items():
+                        print(f"  - {day}: {count} articles")
+                
                 # Process articles - ensuring all historical articles are included
                 if results and 'results' in results:
                     # First, ensure all articles are properly sorted by day
@@ -931,6 +1047,19 @@ def history_item(query):
                     
                     # Group articles by topic, preserving day organization
                     topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, current_query, day_summaries)
+                    
+                    # Debug: Print topic groups organized by day
+                    topics_by_day = {}
+                    for topic in topic_groups:
+                        day = topic['day_group']
+                        if day not in topics_by_day:
+                            topics_by_day[day] = 0
+                        topics_by_day[day] += 1
+                    
+                    print("Topic groups by day:")
+                    for day, count in topics_by_day.items():
+                        has_summary = day in day_summaries and is_valid_summary(day_summaries[day])
+                        print(f"  - {day}: {count} topics, has summary: {has_summary}")
                     
                     # Save the updated day_summaries back to the entry to ensure they're stored in the cache
                     # This is important for ensuring summaries persist between page visits
