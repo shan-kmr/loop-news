@@ -3545,6 +3545,39 @@ if __name__ == '__main__':
         .notification-option label {
             color: var(--text-color);
         }
+        
+        /* Page Loading Overlay */
+        .page-loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            transition: opacity 0.3s ease;
+        }
+        
+        [data-theme="dark"] .page-loading-overlay {
+            background-color: rgba(25, 25, 25, 0.8);
+        }
+        
+        .page-loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top: 4px solid var(--accent-color);
+            animation: spin 1s linear infinite;
+        }
+        
+        [data-theme="dark"] .page-loading-spinner {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-top: 4px solid var(--accent-color);
+        }
     </style>
 </head>
 <body>
@@ -4349,6 +4382,55 @@ if __name__ == '__main__':
             // Show the modal
             modal.style.display = 'flex';
         }
+        
+        // Page loading indicator
+        document.addEventListener('DOMContentLoaded', function() {
+            // Create loading overlay element
+            const loadingOverlay = document.createElement('div');
+            loadingOverlay.className = 'page-loading-overlay';
+            loadingOverlay.style.display = 'none';
+            
+            // Create spinner element
+            const spinner = document.createElement('div');
+            spinner.className = 'page-loading-spinner';
+            
+            // Add spinner to overlay
+            loadingOverlay.appendChild(spinner);
+            
+            // Add overlay to document
+            document.body.appendChild(loadingOverlay);
+            
+            // Show loading overlay before page navigation
+            document.addEventListener('click', function(e) {
+                // Check if the click is on a link or submit button
+                let target = e.target;
+                
+                // Find closest anchor or button if we clicked on a child element
+                const linkElement = target.closest('a');
+                const buttonElement = target.closest('button[type="submit"]');
+                const formElement = target.closest('form');
+                
+                if (linkElement && !e.ctrlKey && !e.metaKey && !linkElement.target) {
+                    // Regular link click (not opening in new tab)
+                    loadingOverlay.style.display = 'flex';
+                } else if (buttonElement && formElement) {
+                    // Form submission
+                    loadingOverlay.style.display = 'flex';
+                }
+            });
+            
+            // Show loading overlay on form submission
+            document.querySelectorAll('form').forEach(form => {
+                form.addEventListener('submit', function() {
+                    loadingOverlay.style.display = 'flex';
+                });
+            });
+            
+            // Add event for browser back/forward navigation
+            window.addEventListener('beforeunload', function() {
+                loadingOverlay.style.display = 'flex';
+            });
+        });
     </script>
 </body>
 </html>''')
