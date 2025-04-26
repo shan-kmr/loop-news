@@ -973,6 +973,9 @@ def history_item(query):
                 if day_summaries is None:
                     day_summaries = {}
                 
+                # Check if we have stored topic groupings from previous runs
+                stored_topic_groups = entry.get('topic_groups', [])
+                
                 # Print out day summaries for debugging
                 if day_summaries:
                     print(f"Found existing day summaries: {', '.join(day_summaries.keys())}")
@@ -1027,42 +1030,72 @@ def history_item(query):
                 
                 print(f"Found {valid_summaries} valid day summaries out of {len(day_summaries)} total in cache")
                 
-                # Debug: Print the count of articles for each day
+                # Process articles - ensuring all historical articles are included
                 if results and 'results' in results:
+                    # First, organize articles by day to see what we're working with
                     articles_by_day = {}
                     for article in results['results']:
                         day = day_group_filter(article)
                         if day not in articles_by_day:
-                            articles_by_day[day] = 0
-                        articles_by_day[day] += 1
+                            articles_by_day[day] = []
+                        articles_by_day[day].append(article)
                     
                     print("Article counts by day:")
-                    for day, count in articles_by_day.items():
-                        print(f"  - {day}: {count} articles")
-                
-                # Process articles - ensuring all historical articles are included
-                if results and 'results' in results:
-                    # First, ensure all articles are properly sorted by day
-                    sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
+                    for day, articles in articles_by_day.items():
+                        print(f"  - {day}: {len(articles)} articles")
                     
-                    # Group articles by topic, preserving day organization
-                    topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, current_query, day_summaries)
+                    # OPTIMIZATION: Only regroup today's articles if needed
+                    final_topic_groups = []
                     
-                    # Debug: Print topic groups organized by day
-                    topics_by_day = {}
-                    for topic in topic_groups:
-                        day = topic['day_group']
-                        if day not in topics_by_day:
-                            topics_by_day[day] = 0
-                        topics_by_day[day] += 1
+                    # First, extract and keep all stored topic groups for days other than Today
+                    if stored_topic_groups:
+                        historical_topic_groups = [group for group in stored_topic_groups 
+                                                 if group.get('day_group') != 'Today']
+                        
+                        if historical_topic_groups:
+                            print(f"Reusing {len(historical_topic_groups)} stored topic groups for historical days")
+                            final_topic_groups.extend(historical_topic_groups)
                     
-                    print("Topic groups by day:")
-                    for day, count in topics_by_day.items():
-                        has_summary = day in day_summaries and is_valid_summary(day_summaries[day])
-                        print(f"  - {day}: {count} topics, has summary: {has_summary}")
+                    # Now process Today's articles if any exist
+                    if 'Today' in articles_by_day and articles_by_day['Today']:
+                        print(f"Processing {len(articles_by_day['Today'])} articles for Today")
+                        # Sort today's articles by age
+                        today_articles = sorted(articles_by_day['Today'], key=extract_age_in_seconds)
+                        # Group today's articles into topics
+                        today_topic_groups = group_articles_by_topic(today_articles, 
+                                                                   similarity_threshold, 
+                                                                   current_query, 
+                                                                   {k: v for k, v in day_summaries.items() if k == 'Today'})
+                        print(f"Generated {len(today_topic_groups)} new topic groups for Today")
+                        final_topic_groups.extend(today_topic_groups)
+                    
+                    # If we have any days that don't have stored topic groups, process them
+                    days_with_stored_groups = set([group.get('day_group') for group in stored_topic_groups])
+                    days_needing_grouping = [day for day in articles_by_day.keys() 
+                                           if day != 'Today' and day not in days_with_stored_groups]
+                    
+                    if days_needing_grouping:
+                        print(f"Processing {len(days_needing_grouping)} days that don't have stored topic groups: {', '.join(days_needing_grouping)}")
+                        # Process each day that needs grouping
+                        for day in days_needing_grouping:
+                            if day in articles_by_day and articles_by_day[day]:
+                                print(f"Grouping {len(articles_by_day[day])} articles for {day}")
+                                day_articles = sorted(articles_by_day[day], key=extract_age_in_seconds)
+                                day_topic_groups = group_articles_by_topic(day_articles, 
+                                                                         similarity_threshold, 
+                                                                         current_query, 
+                                                                         {k: v for k, v in day_summaries.items() if k == day})
+                                print(f"Generated {len(day_topic_groups)} new topic groups for {day}")
+                                final_topic_groups.extend(day_topic_groups)
+                    
+                    # If we didn't have any stored groups or had to regenerate some days, 
+                    # we need to use the old method to group everything
+                    if not final_topic_groups:
+                        print("No stored topic groups found, grouping all articles from scratch")
+                        sorted_articles = sorted(results['results'], key=extract_age_in_seconds)
+                        final_topic_groups = group_articles_by_topic(sorted_articles, similarity_threshold, current_query, day_summaries)
                     
                     # Sort topic groups by day priority to ensure consistent ordering in the timeline
-                    # This ensures Today comes first, followed by Yesterday, etc.
                     day_priority = {
                         "Today": 1,
                         "Yesterday": 2,
@@ -1076,30 +1109,23 @@ def history_item(query):
                         "1 month ago": 10
                     }
                     
-                    topic_groups = sorted(topic_groups, key=lambda x: (
+                    final_topic_groups = sorted(final_topic_groups, key=lambda x: (
                         day_priority.get(x['day_group'], 999),  # First sort by day priority
-                        extract_age_in_seconds(x['articles'][0])  # Then by article age within the day
+                        extract_age_in_seconds(x['articles'][0]) if x.get('articles') else 0  # Then by article age within the day
                     ))
                     
-                    # Save the updated day_summaries back to the entry to ensure they're stored in the cache
-                    # This is important for ensuring summaries persist between page visits
+                    # Store the topic groups for future use
+                    entry['topic_groups'] = final_topic_groups
+                    save_search_history(history)
+                    print(f"Saved {len(final_topic_groups)} topic groups to history for future use")
+                    
+                    # Set the topic groups for rendering
+                    topic_groups = final_topic_groups
+                    
+                    # Save the updated day_summaries back to the entry
                     if 'day_summaries' not in entry or entry['day_summaries'] != day_summaries:
                         entry['day_summaries'] = day_summaries
                         save_search_history(history)
-                        print(f"Saved {len(day_summaries)} day summaries to cache for query: '{query}'")
-                    
-                    # Check if we need to update summaries in history
-                    summary_changed = False
-                    for topic in topic_groups:
-                        day = topic['day_group']
-                        if day in day_summaries and day_summaries[day] != topic.get('day_summary') and is_valid_summary(topic.get('day_summary')):
-                            summary_changed = True
-                            day_summaries[day] = topic.get('day_summary')
-                    
-                    if summary_changed:
-                        entry['day_summaries'] = day_summaries
-                        save_search_history(history)
-                        print(f"Updated cache with new summaries for query: '{query}'")
                 
                 break
     
@@ -1153,7 +1179,7 @@ def history_item(query):
                 
                 topic_groups = sorted(topic_groups, key=lambda x: (
                     day_priority.get(x['day_group'], 999),  # First sort by day priority
-                    extract_age_in_seconds(x['articles'][0])  # Then by article age within the day
+                    extract_age_in_seconds(x['articles'][0]) if x.get('articles') else 0  # Then by article age within the day
                 ))
                 
                 # Cache the results
@@ -1165,6 +1191,7 @@ def history_item(query):
                     'timestamp': search_time.isoformat(),
                     'results': results,
                     'day_summaries': day_summaries,
+                    'topic_groups': topic_groups,  # Store the topic groups for future use
                     'search_time': datetime.now().timestamp()  # Add search_time for proper sorting
                 }
                 save_search_history(history)
@@ -1365,7 +1392,7 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
     CRITICAL: Enforce day boundaries - never mix articles from different days in the same topic.
     
     Args:
-        articles: List of news articles
+        articles: List of news articles or list of lists where each inner list contains articles from one day
         similarity_threshold: Threshold for considering articles as similar (0-1)
         query: The search query used (for summarization)
         day_summaries: Dictionary of existing summaries by day
@@ -1379,6 +1406,19 @@ def group_articles_by_topic(articles, similarity_threshold=0.3, query="", day_su
     # Initialize day_summaries if not provided
     if day_summaries is None:
         day_summaries = {}
+    
+    # OPTIMIZATION: Handle the case where articles are already grouped by day
+    if isinstance(articles, list) and len(articles) > 0 and isinstance(articles[0], list):
+        print("Received pre-grouped articles by day, using optimized processing")
+        day_articles_list = articles
+        # Flatten the list of articles for day detection
+        flat_articles = []
+        for day_articles in day_articles_list:
+            flat_articles.extend(day_articles)
+        articles = flat_articles
+    else:
+        # Original logic: organize articles by day
+        day_articles_list = []
     
     # CRITICAL CHANGE: First, organize articles by day to enforce day boundaries
     day_grouped_articles = {}
