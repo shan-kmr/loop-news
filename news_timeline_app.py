@@ -33,6 +33,7 @@ from config import *
 from models import User
 from auth import auth_bp, init_oauth
 from brave_news_api import BraveNewsAPI
+from reddit_api import RedditAPI  # Import our new Reddit API module
 
 # Add dependencies for LLM models
 try:
@@ -79,6 +80,9 @@ llama_tokenizer = None
 
 # Create the Brave News API client
 brave_api = None
+
+# Create the Reddit API client
+reddit_api = None
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -304,6 +308,7 @@ def update_current_day_results(query, count, freshness, old_results):
         Updated results dictionary with refreshed current day articles and a list of days with new content
     """
     global brave_api
+    global reddit_api
     
     if brave_api is None:
         brave_api_key = app.config.get("BRAVE_API_KEY")
@@ -322,106 +327,105 @@ def update_current_day_results(query, count, freshness, old_results):
         
         print(f"Using freshness '{refresh_freshness}' for refreshing '{query}' (original: {freshness})")
         
-        # Get fresh results
+        # Get fresh news results
         fresh_results = brave_api.search_news(
             query=query,
             count=max(count * 2, 50),  # Get more results to ensure gap coverage
             freshness=refresh_freshness
         )
         
+        # Get Reddit results if available
+        reddit_results = None
+        if reddit_api is not None:
+            try:
+                # Map freshness to time_filter for Reddit
+                time_filter_map = {
+                    'pd': 'day',
+                    'pw': 'week',
+                    'pm': 'month',
+                    'py': 'year',
+                }
+                reddit_time_filter = time_filter_map.get(refresh_freshness, 'week')
+                
+                # Get Reddit results
+                reddit_results = reddit_api.search(
+                    query=query,
+                    count=count,
+                    time_filter=reddit_time_filter
+                )
+                print(f"Got {len(reddit_results.get('results', []))} Reddit results for '{query}'")
+            except Exception as e:
+                print(f"Error getting Reddit results: {str(e)}")
+                reddit_results = None
+        
         if not fresh_results or 'results' not in fresh_results or not old_results or 'results' not in old_results:
+            # If we have Reddit results but no fresh news results, combine them with old results
+            if reddit_results and 'results' in reddit_results and old_results and 'results' in old_results:
+                # Combine Reddit results with old results
+                combined_results = old_results.copy()
+                combined_results['results'] = old_results['results'] + reddit_results['results']
+                return combined_results, ['Today']
+            # Otherwise return fresh results or old results if no fresh ones
             return fresh_results or old_results, []
         
         # Get new and old articles
         new_articles = fresh_results['results']
         old_articles = old_results['results']
         
-        # Find the age of the oldest "recent" article from the original search
-        # We'll keep articles older than this and replace everything newer
-        oldest_recent_age_seconds = float('inf')
+        # Add Reddit results if available
+        if reddit_results and 'results' in reddit_results:
+            new_articles.extend(reddit_results['results'])
+            print(f"Added {len(reddit_results['results'])} Reddit results to new articles (total: {len(new_articles)})")
         
-        # Determine what timeframe we're replacing based on the freshness parameter
-        cutoff_seconds = {
-            'pd': 86400,        # 1 day
-            'pw': 604800,       # 1 week
-            'pm': 2592000,      # 1 month 
-            'py': 31536000,     # 1 year
-            'h': 3600           # 1 hour (fallback)
-        }.get(refresh_freshness, 604800)  # Default to 1 week if unknown
+        # Create a set of URLs from old articles for comparison
+        old_urls = {article.get('url') for article in old_articles if 'url' in article}
         
-        # CRITICAL FIX: Only update TODAY's content, preserving Yesterday and older content completely
-        # Categorize old articles by day group to ensure preservation
-        articles_by_day = {}
+        # Find truly new articles (not already in old results)
+        new_article_urls = {article.get('url') for article in new_articles if 'url' in article}
+        truly_new_urls = new_article_urls - old_urls
         
-        # First, organize all old articles by day
-        for article in old_articles:
-            day_group = day_group_filter(article)
-            if day_group not in articles_by_day:
-                articles_by_day[day_group] = []
-            articles_by_day[day_group].append(article)
+        # Track which days have new content added
+        days_with_new_articles = []
         
-        # We only want to replace articles from 'Today', keep all older articles intact
-        articles_to_keep = []
-        for day, articles in articles_by_day.items():
-            if day != "Today":
-                # Keep ALL articles from yesterday and older days
-                articles_to_keep.extend(articles)
-                print(f"Preserving {len(articles)} articles from {day}")
-        
-        # Keep track of articles within the Today window that we'll refresh
-        existing_today_articles = articles_by_day.get("Today", [])
-        
-        # Log what we're doing
-        print(f"Refreshing articles for '{query}' using freshness: {refresh_freshness}")
-        print(f"Keeping {len(articles_to_keep)} older articles (Yesterday and before)")
-        print(f"Refreshing {len(existing_today_articles)} Today articles")
-        
-        # De-duplicate articles by URL to prevent duplicates
-        seen_urls = set()
-        combined_articles = []
-        
-        # Track which days have new articles added (for summary regeneration)
-        days_with_new_articles = set()
-        
-        # First add all preserved older articles (keep everything from before Today)
-        for article in articles_to_keep:
-            url = article.get('url', '')
-            if url:
-                seen_urls.add(url)
-                combined_articles.append(article)
-        
-        # Then add existing Today articles (preserve what we've already shown today)
-        for article in existing_today_articles:
-            url = article.get('url', '')
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                combined_articles.append(article)
-        
-        # Finally add new articles that aren't already present
-        new_articles_added = 0
-        for article in new_articles:
-            url = article.get('url', '')
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                combined_articles.append(article)
-                new_articles_added += 1
-                
-                # Track which day this article belongs to for summary regeneration
-                day_group = day_group_filter(article)
-                days_with_new_articles.add(day_group)
-        
-        print(f"Added {new_articles_added} new unique articles to the results")
-        if days_with_new_articles:
-            print(f"Days with new content (will regenerate summaries): {', '.join(days_with_new_articles)}")
-        
-        # Create updated results
-        updated_results = fresh_results.copy()
-        updated_results['results'] = combined_articles
-        
-        return updated_results, list(days_with_new_articles)
-    
+        if truly_new_urls:
+            # We have new content, find which days they belong to
+            for article in new_articles:
+                if article.get('url') in truly_new_urls:
+                    day = day_group_filter(article)
+                    if day not in days_with_new_articles:
+                        days_with_new_articles.append(day)
+            
+            # Sort old and new articles to ensure consistent order
+            old_articles_dict = {article.get('url'): article for article in old_articles if 'url' in article}
+            
+            # Remove duplicates while merging old and new articles
+            merged_articles = []
+            
+            for article in new_articles:
+                if 'url' in article:
+                    merged_articles.append(article)
+                    # Remove from old_articles_dict to avoid duplicates
+                    old_articles_dict.pop(article.get('url'), None)
+            
+            # Add remaining old articles that weren't in new results
+            merged_articles.extend(old_articles_dict.values())
+            
+            # Sort by most recent first
+            merged_articles.sort(key=extract_age_in_seconds)
+            
+            # Create merged results
+            merged_results = fresh_results.copy()
+            merged_results['results'] = merged_articles
+            
+            print(f"Merged {len(new_articles)} new and {len(old_articles)} old articles into {len(merged_articles)} unique articles")
+            print(f"Found new content for days: {days_with_new_articles}")
+            
+            return merged_results, days_with_new_articles
+        else:
+            print(f"No new content found for '{query}'")
+            return old_results, []
     except Exception as e:
-        print(f"Error updating results: {str(e)}")
+        print(f"Error refreshing results: {str(e)}")
         return old_results, []
 
 def collect_day_summaries(history):
@@ -476,12 +480,13 @@ def collect_day_summaries(history):
 def index():
     """Main route that handles both the search form and displaying results."""
     global brave_api
+    global reddit_api
     
     # Redirect to raison d'etre page if not logged in
     if not current_user.is_authenticated:
         return redirect(url_for('raison_detre'))
     
-    # Initialize the API client if needed
+    # Initialize the API clients if needed
     if brave_api is None:
         brave_api_key = app.config.get("BRAVE_API_KEY")
         if not brave_api_key:
@@ -490,6 +495,14 @@ def index():
                                   user=current_user)
         brave_api = BraveNewsAPI(api_key=brave_api_key)
     
+    if reddit_api is None:
+        try:
+            reddit_api = RedditAPI()
+            reddit_api.init()
+        except Exception as e:
+            print(f"Warning: Could not initialize Reddit API: {str(e)}")
+            print("Reddit content will not be available")
+
     # Default query and results
     query = request.args.get('query', 'breaking news')
     results = None
@@ -3578,6 +3591,24 @@ if __name__ == '__main__':
             border: 4px solid rgba(255, 255, 255, 0.1);
             border-top: 4px solid var(--accent-color);
         }
+        
+        /* Reddit Source Badge */
+        .reddit-badge {
+            display: inline-flex;
+            align-items: center;
+            background-color: #FF4500;
+            color: white;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-left: 5px;
+            font-weight: bold;
+        }
+        
+        [data-theme="dark"] .reddit-badge {
+            background-color: #FF4500;
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -4419,6 +4450,26 @@ if __name__ == '__main__':
         // Show overlay on page unload
         window.addEventListener('beforeunload', function() {
             showLoadingOverlay();
+        });
+        
+        // Add Reddit badges to articles from Reddit
+        document.addEventListener('DOMContentLoaded', function() {
+            const articleItems = document.querySelectorAll('.article-item');
+            
+            articleItems.forEach(function(article) {
+                // Check if this is from Reddit (stored as data attribute)
+                if (article.getAttribute('data-reddit') === 'true') {
+                    // Find the source element
+                    const sourceEl = article.querySelector('.article-source');
+                    if (sourceEl) {
+                        // Add Reddit badge
+                        const badge = document.createElement('span');
+                        badge.className = 'reddit-badge';
+                        badge.textContent = 'Reddit';
+                        sourceEl.appendChild(badge);
+                    }
+                }
+            });
         });
     </script>
     
