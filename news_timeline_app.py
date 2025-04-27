@@ -3675,6 +3675,24 @@ if __name__ == '__main__':
             background-color: #FF4500;
             color: white;
         }
+        
+        .topic-title {
+            font-weight: 600;
+            flex: 1;
+            margin-right: 10px;
+        }
+        
+        .reddit-indicator {
+            color: #FF4500;
+            margin-right: 8px;
+            font-size: 0.9em;
+        }
+        
+        .topic-count {
+            font-size: 0.8em;
+            color: #777;
+            margin-right: 10px;
+        }
     </style>
 </head>
 <body>
@@ -3848,6 +3866,15 @@ if __name__ == '__main__':
                                             {% if topic.count > 1 %}
                                                 <span class="topic-count">{{ topic.count }} articles</span>
                                             {% endif %}
+                                            {% set has_reddit = false %}
+                                            {% for article in topic.articles %}
+                                                {% if article.is_reddit or article.get('data_reddit') == 'true' %}
+                                                    {% set has_reddit = true %}
+                                                {% endif %}
+                                            {% endfor %}
+                                            {% if has_reddit %}
+                                                <span class="reddit-indicator" title="Contains Reddit discussion"><i class="fab fa-reddit-alien"></i></span>
+                                            {% endif %}
                                             <div class="topic-time">{{ topic.newest_age }}</div>
                                         </div>
                                         
@@ -3964,6 +3991,7 @@ if __name__ == '__main__':
                 {% else %}
                     <form method="post" action="/" id="modalSearchForm">
                         <input type="text" name="query" placeholder="add a topic" class="search-box" required>
+                        <p style="margin-top: 5px; font-style: italic; color: #777; font-size: 0.9em;">this process might take up to 60 seconds as we scan the internet</p>
                         <div class="search-options" style="display: none;">
                             <select name="count" class="option-select">
                                 <option value="10">10 results</option>
