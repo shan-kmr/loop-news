@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>error - loop</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        :root {
+            --bg-color: #f8f8f8;
+            --text-color: #333;
+            --accent-color: #6d28d9;
+            --secondary-color: #a78bfa;
+            --border-color: #e5e7eb;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: "Proxima Nova", Tahoma, -apple-system, BlinkMacSystemFont, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            text-align: center;
+        }
+        
+        h1, h2, h3, p, a {
+            text-transform: lowercase;
+        }
+        
+        h1 {
+            color: #b91c1c;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+        
+        .error-container {
+            background-color: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            border: 1px solid #fee2e2;
+        }
+        
+        .error-message {
+            margin-bottom: 30px;
+            font-size: 18px;
+            color: #4b5563;
+        }
+        
+        .button {
+            display: inline-block;
+            background-color: var(--accent-color);
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .button:hover {
+            background-color: #5b21b6;
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h1>error</h1>
+        <div class="error-message">
+            {{ error }}
+        </div>
+        <a href="/" class="button">go back</a>
+    </div>
+</body>
+</html>

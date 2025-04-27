@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head></head>
+<body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+    <h1 style="font-size: 24px; color: #333; margin-bottom: 20px;">loop: {{ topic }}</h1>
+    
+    <div style="margin-bottom: 30px;">
+        <h2 style="font-size: 18px; color: #555; margin-bottom: 10px;">{{ summary_date }}'s Summary ({{ email_date_str }} EST)</h2>
+        <p style="line-height: 1.6;">{{ summary_text }}</p>
+    </div>
+    
+    {{ new_articles_html | safe }}
+    
+    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 14px; color: #777;">
+        <p>View full history at: <a href="http://loopnow.co/history/{{ topic }}" style="color: #555;">View Details</a></p>
+        <p>Notification frequency: {{ frequency }}. To change your settings, click the bell icon next to the topic name.</p>
+    </div>
+</body>
+</html> 
