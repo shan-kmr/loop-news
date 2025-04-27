@@ -2746,13 +2746,16 @@ def debug_notifications():
 # Get the path to the history file for a given user
 def get_history_file(user=None):
     """Get the path to the history file for a given user."""
+    # Get history directory with fallback to data directory
+    history_dir = app.config.get('HISTORY_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
+    
     if user and hasattr(user, 'email'):
         # Hash the email to create a unique filename
         email_hash = hashlib.md5(user.email.encode()).hexdigest()
-        history_file = os.path.join(app.config['HISTORY_DIR'], f"{email_hash}_history.json")
+        history_file = os.path.join(history_dir, f"{email_hash}_history.json")
     else:
         # Use the default history file if no user is provided
-        history_file = os.path.join(app.config['HISTORY_DIR'], "default_history.json")
+        history_file = os.path.join(history_dir, "default_history.json")
     
     # Ensure the history directory exists
     os.makedirs(os.path.dirname(history_file), exist_ok=True)
@@ -2762,7 +2765,9 @@ def get_history_file(user=None):
 # Get the path to the shared briefs file
 def get_shared_briefs_file():
     """Get the path to the shared briefs file."""
-    shared_file = os.path.join(app.config['HISTORY_DIR'], "shared_briefs.json")
+    # Get history directory with fallback to data directory
+    history_dir = app.config.get('HISTORY_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
+    shared_file = os.path.join(history_dir, "shared_briefs.json")
     
     # Ensure the history directory exists
     os.makedirs(os.path.dirname(shared_file), exist_ok=True)
