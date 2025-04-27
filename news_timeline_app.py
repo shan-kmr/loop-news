@@ -2639,4 +2639,4 @@ if __name__ == '__main__':
     print("NOTE: Set the following environment variables for Google authentication:")
     print("export GOOGLE_CLIENT_ID=your_google_client_id")
     print("export GOOGLE_CLIENT_SECRET=your_google_client_secret")
-    app.run(host='127.0.0.1', port=5000, debug=True) 
+    app.run(host='0.0.0.0', port=5000, debug=True) 
