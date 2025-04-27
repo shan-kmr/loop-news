@@ -3685,7 +3685,12 @@ if __name__ == '__main__':
         .reddit-indicator {
             color: #FF4500;
             margin-right: 8px;
-            font-size: 0.9em;
+            font-size: 1em;
+            display: inline-flex;
+            align-items: center;
+            background-color: rgba(255, 69, 0, 0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
         }
         
         .topic-count {
@@ -3868,7 +3873,7 @@ if __name__ == '__main__':
                                             {% endif %}
                                             {% set has_reddit = false %}
                                             {% for article in topic.articles %}
-                                                {% if article.is_reddit or article.get('data_reddit') == 'true' %}
+                                                {% if article.is_reddit or article.get('data_reddit') == 'true' or 'reddit' in article.get('description', '').lower() or 'reddit' in article.get('source', '').lower() or article.get('description', '').startswith('Reddit post') %}
                                                     {% set has_reddit = true %}
                                                 {% endif %}
                                             {% endfor %}
