@@ -467,6 +467,12 @@ def collect_day_summaries(history):
         best_priority = float('inf')
         best_summary = None
         
+        # Special handling for donald trump
+        if query == 'donald trump':
+            print(f"\n--- DETAILED DEBUG FOR DONALD TRUMP SUMMARIES ---")
+            debug_history_summaries('donald trump')
+            print("--- END DONALD TRUMP DEBUG ---\n")
+        
         # Check all entries for this query to find the best summary
         for entry in entries:
             if 'day_summaries' not in entry or not entry['day_summaries']:
@@ -485,6 +491,9 @@ def collect_day_summaries(history):
                         best_summary = summary
                 else:
                     print(f"  Invalid summary found for day '{day}'")
+                    # Special debug for donald trump
+                    if query == 'donald trump' and day == 'Today':
+                        print(f"    Donald Trump Today summary: {type(summary).__name__}, value: {summary}")
         
         # If we found a valid summary for this query, store it
         if best_day and best_summary:
@@ -655,6 +664,23 @@ def index():
     history = load_search_history()  # Reload history to ensure we have fresh data
     day_summaries = collect_day_summaries(history)
     print(f"Collected {len(day_summaries)} day summaries for home page display")
+    
+    # Force donald trump to show Today summary if available
+    if 'donald trump' in [summary['query'] for summary in day_summaries.values()]:
+        found_valid_today = False
+        for key, entry in history.items():
+            if entry.get('query') == 'donald trump' and 'day_summaries' in entry and entry['day_summaries']:
+                if 'Today' in entry['day_summaries'] and is_valid_summary(entry['day_summaries']['Today']):
+                    today_summary = entry['day_summaries']['Today']
+                    summary_key = f"Today_donald trump"
+                    day_summaries[summary_key] = {
+                        'query': 'donald trump',
+                        'day': 'Today',
+                        'summary': today_summary
+                    }
+                    found_valid_today = True
+                    print(f"Forcing Today summary for donald trump on home page: {today_summary[:50]}...")
+                    break
     
     # Debug each summary
     for key, summary in day_summaries.items():
@@ -1311,6 +1337,33 @@ def history_item(query):
     # Ensure we always have a search_time for the ticker to work
     if search_time is None:
         search_time = datetime.now()
+    
+    # Special handling for the donald trump query since it's having issues
+    if current_query == 'donald trump':
+        debug_history_summaries(current_query)
+        
+        # Find all entries for this query and ensure Today's summary is valid
+        history = load_search_history()
+        for key, entry in history.items():
+            if entry.get('query') == current_query and 'results' in entry and 'results' in entry['results']:
+                today_articles = [a for a in entry['results']['results'] if day_group_filter(a) == 'Today']
+                if today_articles and ('day_summaries' not in entry or entry['day_summaries'] is None or 
+                                       'Today' not in entry['day_summaries'] or 
+                                       not is_valid_summary(entry['day_summaries']['Today'])):
+                    print(f"Fixing Today summary for {current_query} in entry {key}")
+                    today_summary = summarize_daily_news(today_articles, current_query)
+                    if is_valid_summary(today_summary):
+                        if 'day_summaries' not in entry or entry['day_summaries'] is None:
+                            entry['day_summaries'] = {}
+                        entry['day_summaries']['Today'] = today_summary
+                        
+                        # Also update the day_summaries variable for this request
+                        if 'Today' not in day_summaries or not is_valid_summary(day_summaries.get('Today')):
+                            day_summaries['Today'] = today_summary
+        
+        # Save changes
+        save_search_history(history)
+        debug_history_summaries(current_query)
     
     return render_template('index.html', 
                           query=current_query, 
@@ -2885,19 +2938,102 @@ def force_regenerate_today_summary(query):
         print(f"Error regenerating Today summary: {e}")
         return False
 
-if __name__ == '__main__':
-    # Initialize models in background threads to avoid blocking app startup
-    if LLAMA_AVAILABLE or OPENAI_AVAILABLE:
-        init_thread = threading.Thread(target=init_models)
-        init_thread.daemon = True
-        init_thread.start()
+def debug_history_summaries(query=None):
+    """
+    Debug function to examine all summaries in the history file,
+    particularly useful for tracking down issues with specific queries.
     
-    # Start notification scheduler
-    schedule_notification_checks()
-    
-    # Create templates
-    with open('templates/index.html', 'w') as f:
-        f.write('''<!DOCTYPE html>
+    Args:
+        query: Optional specific query to debug, or None for all queries
+    """
+    try:
+        history = load_search_history()
+        print("\n=== DEBUG HISTORY SUMMARIES ===")
+        
+        for key, entry in history.items():
+            entry_query = entry.get('query', '')
+            if query and entry_query != query:
+                continue
+                
+            print(f"\nEntry key: {key}, Query: {entry_query}")
+            
+            if 'day_summaries' not in entry or entry['day_summaries'] is None:
+                print("  No day_summaries dictionary!")
+                continue
+                
+            print(f"  day_summaries keys: {', '.join(entry['day_summaries'].keys())}")
+            
+            for day, summary in entry['day_summaries'].items():
+                validity = "VALID" if is_valid_summary(summary) else "INVALID"
+                summary_preview = summary[:30] + "..." if isinstance(summary, str) else str(summary)
+                print(f"  {day}: {validity} ({type(summary).__name__}) - {summary_preview}")
+            
+        print("=== END DEBUG ===\n")
+    except Exception as e:
+        print(f"Error in debug_history_summaries: {e}")
+
+def emergency_fix_summaries():
+    """Emergency fix for all query summaries to ensure Today summaries work correctly."""
+    try:
+        history = load_search_history()
+        
+        # Find all unique queries
+        queries = set()
+        for key, entry in history.items():
+            if 'query' in entry:
+                queries.add(entry['query'])
+        
+        print(f"Found {len(queries)} unique queries")
+        
+        # Process each query
+        for query in queries:
+            print(f"Checking summaries for '{query}'")
+            
+            # Find all entries with today's articles
+            entries_with_today = []
+            for key, entry in history.items():
+                if entry.get('query') != query:
+                    continue
+                    
+                # Check if it has results and Today articles
+                if ('results' in entry and 'results' in entry['results'] and 
+                    any(day_group_filter(a) == 'Today' for a in entry['results']['results'])):
+                    entries_with_today.append((key, entry))
+            
+            if not entries_with_today:
+                print(f"No entries with Today articles for '{query}'")
+                continue
+                
+            # Sort by timestamp (most recent first)
+            entries_with_today.sort(key=lambda x: datetime.fromisoformat(x[1].get('timestamp', '1970-01-01')), reverse=True)
+            
+            # Get the most recent entry
+            key, entry = entries_with_today[0]
+            
+            # Check if it already has a valid Today summary
+            has_valid_today = ('day_summaries' in entry and 
+                              entry['day_summaries'] is not None and 
+                              'Today' in entry['day_summaries'] and 
+                              is_valid_summary(entry['day_summaries']['Today']))
+            
+            if has_valid_today:
+                print(f"Entry already has valid Today summary for '{query}'")
+                today_summary = entry['day_summaries']['Today']
+            else:
+                # Generate a new Today summary
+                if __name__ == '__main__':
+                    # Initialize models in background threads to avoid blocking app startup
+                    if LLAMA_AVAILABLE or OPENAI_AVAILABLE:
+                        init_thread = threading.Thread(target=init_models)
+                        init_thread.daemon = True
+                        init_thread.start()
+                    
+                    # Start notification scheduler
+                    schedule_notification_checks()
+                    
+                    # Create templates
+                    with open('templates/index.html', 'w') as f:
+                        f.write('''<!DOCTYPE html>
 <html>
 <head>
     <title>loop: track all moves in a single timeline</title>
