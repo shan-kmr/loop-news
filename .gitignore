@@ -37,6 +37,7 @@ env/
 # Application specific
 search_history.json
 user_data/
+data/
 llama_model_cache/
 templates/
 
