@@ -3693,6 +3693,11 @@ if __name__ == '__main__':
             border-radius: 3px;
         }
         
+        .reddit-text-indicator {
+            color: #FF4500;
+            font-weight: 500;
+        }
+        
         .topic-count {
             font-size: 0.8em;
             color: #777;
@@ -3880,7 +3885,12 @@ if __name__ == '__main__':
                                             {% if has_reddit %}
                                                 <span class="reddit-indicator" title="Contains Reddit discussion"><i class="fab fa-reddit-alien"></i></span>
                                             {% endif %}
-                                            <div class="topic-time">{{ topic.newest_age }}</div>
+                                            <div class="topic-time">
+                                                {{ topic.newest_age }}
+                                                {% if has_reddit %}
+                                                    <span class="reddit-text-indicator"> • Reddit</span>
+                                                {% endif %}
+                                            </div>
                                         </div>
                                         
                                         <div class="topic-content">
