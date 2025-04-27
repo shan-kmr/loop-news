@@ -1,7 +1,7 @@
 # Loop News – Project Synopsis
 
 ## Project Overview  
-Loop News is a Flask-based web application that lets users **“stay in the loop”** on any topic by:
+Loop News is a Flask-based web application that lets users **"stay in the loop"** on any topic by:
 * pulling fresh news from multiple public sources (Brave News Search, Reddit, Twitter, Perplexity, etc.),
 * grouping related articles into a chronological timeline,
 * generating concise AI summaries for each day or topic, and
@@ -53,7 +53,9 @@ The end-product must respect copyright by always linking back to original source
 * Defaults to `MODEL_PROVIDER = "openai"`; Llama path is inert unless explicitly flipped.
 
 ### Static & templates
-* Jinja templates for timeline view, search bar, and history list.
+* All HTML is rendered using external Jinja templates located in the `templates/` directory (`index.html`, `error.html`, `notification_email.html`).
+* Templates handle the main UI, timeline view, error pages, and email notifications.
+* Flask's `render_template` function is used exclusively for rendering.
 * CSS/JS assets kept minimal; Bootstrap CDN only.
 
 ### Storage System  
@@ -64,7 +66,7 @@ user_data/<safe_email>/search_history.json
 That one JSON holds every search query, its raw articles, per-day summaries, topic clusters, timestamps, and any notification settings.
 
 #### Google Authentication  
-Instead of building a username/password system, the app uses **“Log in with Google”** via OAuth2. You click the Google button, grant basic profile access, and Google returns a unique user ID (the “sub”), your name, email, and avatar URL. The app then:  
+Instead of building a username/password system, the app uses **"Log in with Google"** via OAuth2. You click the Google button, grant basic profile access, and Google returns a unique user ID (the "sub"), your name, email, and avatar URL. The app then:  
 1. Creates or updates `user_data/<sub>.json` with your profile.  
 2. Stores your `<sub>` in a secure session cookie so every request knows exactly who you are.
 
