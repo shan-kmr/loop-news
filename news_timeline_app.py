@@ -27,6 +27,16 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from urllib.parse import urlparse
 import traceback
+import sys
+import uuid
+import hashlib
+import pickle
+import logging
+import random
+import copy
+import nltk
+import joblib
+import shutil
 
 # Import configuration and models
 from config import *
@@ -2733,6 +2743,212 @@ def debug_notifications():
         'historyFiles': results
     })
 
+# Get the path to the history file for a given user
+def get_history_file(user=None):
+    """Get the path to the history file for a given user."""
+    if user and hasattr(user, 'email'):
+        # Hash the email to create a unique filename
+        email_hash = hashlib.md5(user.email.encode()).hexdigest()
+        history_file = os.path.join(app.config['HISTORY_DIR'], f"{email_hash}_history.json")
+    else:
+        # Use the default history file if no user is provided
+        history_file = os.path.join(app.config['HISTORY_DIR'], "default_history.json")
+    
+    # Ensure the history directory exists
+    os.makedirs(os.path.dirname(history_file), exist_ok=True)
+    
+    return history_file
+
+# Get the path to the shared briefs file
+def get_shared_briefs_file():
+    """Get the path to the shared briefs file."""
+    shared_file = os.path.join(app.config['HISTORY_DIR'], "shared_briefs.json")
+    
+    # Ensure the history directory exists
+    os.makedirs(os.path.dirname(shared_file), exist_ok=True)
+    
+    return shared_file
+
+# Load shared briefs from file
+def load_shared_briefs():
+    """Load shared briefs from file."""
+    shared_file = get_shared_briefs_file()
+    
+    if os.path.exists(shared_file):
+        try:
+            with open(shared_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading shared briefs: {str(e)}")
+            return {}
+    else:
+        return {}
+
+# Save shared briefs to file
+def save_shared_briefs(shared_briefs):
+    """Save shared briefs to file."""
+    shared_file = get_shared_briefs_file()
+    
+    try:
+        with open(shared_file, 'w') as f:
+            json.dump(shared_briefs, f, indent=2)
+    except Exception as e:
+        print(f"Error saving shared briefs: {str(e)}")
+
+# Generate a unique share ID for a brief
+def generate_share_id(user_email, brief_query):
+    """Generate a unique share ID for a brief."""
+    # Create a unique string combining user, brief, and timestamp
+    unique_string = f"{user_email}:{brief_query}:{time.time()}"
+    
+    # Hash it to create a shorter ID
+    hash_object = hashlib.md5(unique_string.encode())
+    hex_dig = hash_object.hexdigest()
+    
+    # Return a shorter version (first 10 chars)
+    return hex_dig[:10]
+
+# Create a shared brief
+def create_shared_brief(user, brief_query):
+    """Create a shared brief and return the share ID."""
+    if not user or not hasattr(user, 'email'):
+        return None
+    
+    # Load existing shared briefs
+    shared_briefs = load_shared_briefs()
+    
+    # Check if this brief is already shared by this user
+    for share_id, brief_info in shared_briefs.items():
+        if brief_info.get('original_owner') == user.email and brief_info.get('brief_query') == brief_query:
+            # Brief already shared, return existing share ID
+            return share_id
+    
+    # Generate a new share ID
+    share_id = generate_share_id(user.email, brief_query)
+    
+    # Create the shared brief record
+    shared_briefs[share_id] = {
+        'original_owner': user.email,
+        'original_owner_name': getattr(user, 'name', user.email),
+        'brief_query': brief_query,
+        'created_at': time.time(),
+    }
+    
+    # Save updated shared briefs
+    save_shared_briefs(shared_briefs)
+    
+    return share_id
+
+# Get information about a shared brief
+def get_shared_brief_info(share_id):
+    """Get information about a shared brief."""
+    shared_briefs = load_shared_briefs()
+    return shared_briefs.get(share_id)
+
+@app.route('/s/<share_id>', methods=['GET'])
+def view_shared_brief(share_id):
+    """View a shared brief without requiring login."""
+    # Get information about the shared brief
+    shared_brief_info = get_shared_brief_info(share_id)
+    
+    if not shared_brief_info:
+        # If share ID doesn't exist, show error
+        return render_template('error.html', 
+                              error="This shared brief doesn't exist or has been removed.",
+                              user=current_user)
+    
+    # Get the original brief details
+    owner_email = shared_brief_info.get('original_owner')
+    brief_query = shared_brief_info.get('brief_query')
+    
+    # Create a User object for the owner to use with get_history_file
+    class TempUser:
+        def __init__(self, email):
+            self.email = email
+    
+    owner = TempUser(owner_email)
+    
+    # Load the owner's history to get the brief data
+    history_file = get_history_file(owner)
+    
+    if not os.path.exists(history_file):
+        return render_template('error.html', 
+                              error="The original brief no longer exists.",
+                              user=current_user)
+    
+    try:
+        with open(history_file, 'r') as f:
+            history = json.load(f)
+    except Exception as e:
+        return render_template('error.html', 
+                              error=f"Error loading the brief: {str(e)}",
+                              user=current_user)
+    
+    # Look for the brief entry in the owner's history
+    brief_entry = None
+    cache_key = None
+    
+    for key, entry in history.items():
+        if entry.get('query') == brief_query:
+            brief_entry = entry
+            cache_key = key
+            break
+    
+    if not brief_entry:
+        return render_template('error.html', 
+                              error="The brief data could not be found.",
+                              user=current_user)
+    
+    # Prepare data for rendering
+    results = brief_entry.get('results')
+    search_time = datetime.fromisoformat(brief_entry.get('timestamp')) if 'timestamp' in brief_entry else None
+    day_summaries = brief_entry.get('day_summaries', {})
+    topic_groups = brief_entry.get('topic_groups', [])
+    
+    # Get list of history entries for sidebar
+    # For shared view, we'll just show this one brief
+    history_entries = [{
+        'query': brief_query,
+        'timestamp': brief_entry.get('timestamp'),
+        'key': cache_key
+    }]
+    
+    return render_template('index.html', 
+                          query=brief_query, 
+                          results=results, 
+                          search_time=search_time,
+                          error=None,
+                          history_entries=history_entries,
+                          topic_groups=topic_groups,
+                          day_summaries=day_summaries,
+                          history={},  # Empty history to prevent showing other briefs
+                          active_tab="shared",  # New tab to indicate shared view
+                          is_shared_view=True,  # Flag to indicate shared view
+                          shared_by=shared_brief_info.get('original_owner_name', owner_email),
+                          user=current_user)
+
+@app.route('/api/share_brief/<path:query>', methods=['POST'])
+@login_required
+def share_brief_api(query):
+    """API endpoint to create a shared brief."""
+    # Create shared brief and get share ID
+    share_id = create_shared_brief(current_user, query)
+    
+    if not share_id:
+        return jsonify({
+            'success': False,
+            'error': 'Failed to create shared brief'
+        }), 400
+    
+    # Generate shareable URL
+    share_url = url_for('view_shared_brief', share_id=share_id, _external=True)
+    
+    return jsonify({
+        'success': True,
+        'share_id': share_id,
+        'share_url': share_url
+    })
+
 if __name__ == '__main__':
     # Initialize models in background threads to avoid blocking app startup
     if LLAMA_AVAILABLE or OPENAI_AVAILABLE:
@@ -3703,6 +3919,107 @@ if __name__ == '__main__':
             color: #777;
             margin-right: 10px;
         }
+        
+        .card-actions {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        
+        .card-action-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: #777;
+            font-size: 14px;
+            padding: 4px;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+        }
+        
+        .card-action-button:hover {
+            color: var(--text-color);
+            background-color: rgba(0,0,0,0.05);
+        }
+        
+        [data-theme="dark"] .card-action-button:hover {
+            background-color: rgba(255,255,255,0.1);
+        }
+        
+        .share-button:hover {
+            color: #2563EB;
+        }
+        
+        .bell-button:hover {
+            color: #EAB308;
+        }
+        
+        .trash-button:hover {
+            color: #DC2626;
+        }
+        
+        .share-modal-content {
+            text-align: center;
+        }
+        
+        .share-url-container {
+            display: flex;
+            margin: 20px 0;
+            align-items: center;
+            background-color: rgba(0,0,0,0.05);
+            border-radius: 6px;
+            padding: 10px;
+            position: relative;
+        }
+        
+        [data-theme="dark"] .share-url-container {
+            background-color: rgba(255,255,255,0.1);
+        }
+        
+        .share-url {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-family: monospace;
+            padding: 0 10px;
+            color: var(--text-color);
+            border: none;
+            background: transparent;
+        }
+        
+        .copy-button {
+            background-color: var(--accent-color);
+            border: none;
+            color: black;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .copy-button:hover {
+            background-color: var(--secondary-color);
+        }
+        
+        .shared-info {
+            padding: 8px 15px;
+            background-color: rgba(37, 99, 235, 0.1);
+            color: #2563EB;
+            border-radius: 4px;
+            font-size: 14px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .shared-by {
+            font-style: italic;
+            color: #777;
+            margin-bottom: 20px;
+        }
     </style>
 </head>
 <body>
@@ -3776,13 +4093,22 @@ if __name__ == '__main__':
                                     <i class="fas fa-bell notification-bell" onclick="event.stopPropagation(); openNotificationModal('{{ entry.query }}')"></i>
                                 </div>
                                 <div class="card-right-elements">
-                                    <div class="detail-link">
-                                        detailed analysis <span class="arrow">→</span>
+                                    <div class="card-actions">
+                                        <button class="card-action-button share-button" onclick="shareBrief('{{ entry.query }}')" title="Share brief">
+                                            <i class="fas fa-share-alt"></i>
+                                        </button>
+                                        <button class="card-action-button bell-button" onclick="openNotificationModal('{{ entry.query }}')" title="Notifications">
+                                            <i class="fas fa-bell"></i>
+                                        </button>
+                                        <button class="card-action-button trash-button" onclick="deleteHistoryItem('{{ entry.query }}')" title="Delete brief">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
                                     </div>
-                                    <div class="refresh-info">
-                                        <span class="reload-timer-label">auto-refresh in:</span>
-                                        <span class="reload-timer" data-query="{{ entry.query }}">--:--</span>
-                                    </div>
+                                    {% if loop.index == 1 %}
+                                        <div class="live-badge">
+                                            live <span class="live-dot"></span>
+                                        </div>
+                                    {% endif %}
                                 </div>
                             </div>
                             
@@ -4088,6 +4414,26 @@ if __name__ == '__main__':
         </div>
     </div>
     
+    <!-- Modal for sharing briefs -->
+    <div id="shareModal" class="modal">
+        <div class="modal-content">
+            <h2 class="modal-title">share brief</h2>
+            <div class="share-modal-content">
+                <p>share this brief with anyone - even without an account</p>
+                <div class="share-url-container">
+                    <input type="text" id="shareUrl" class="share-url" readonly>
+                    <button class="copy-button" onclick="copyShareUrl()">copy link</button>
+                </div>
+                <div id="copySuccess" style="color: #10B981; margin-top: 5px; display: none;">
+                    <i class="fas fa-check"></i> copied to clipboard
+                </div>
+            </div>
+            <div class="modal-buttons">
+                <button type="button" class="modal-button cancel-button" onclick="closeShareModal()">close</button>
+            </div>
+        </div>
+    </div>
+    
     <script>
         function toggleTopic(element) {
             const content = element.nextElementSibling;
@@ -4253,6 +4599,7 @@ if __name__ == '__main__':
                 const briefModal = document.getElementById('newBriefModal');
                 const accessModal = document.getElementById('requestAccessModal');
                 const notificationModal = document.getElementById('notificationModal');
+                const shareModal = document.getElementById('shareModal');
                 
                 if (event.target == briefModal) {
                     closeNewBriefModal();
@@ -4580,6 +4927,123 @@ if __name__ == '__main__':
                 }
             });
         });
+        
+        function closeNotificationModal() {
+            document.getElementById('notificationModal').style.display = 'none';
+        }
+        
+        function openShareModal() {
+            document.getElementById('shareModal').style.display = 'flex';
+        }
+        
+        function closeShareModal() {
+            document.getElementById('shareModal').style.display = 'none';
+        }
+        
+        function shareBrief(query) {
+            // Clear previous copy status
+            document.getElementById('copySuccess').style.display = 'none';
+            
+            // Start loading state
+            const shareButton = document.querySelector(`.share-button[onclick="shareBrief('${query}')"]`);
+            if (shareButton) {
+                const originalIcon = shareButton.innerHTML;
+                shareButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                shareButton.disabled = true;
+                
+                // Call API to create shared brief
+                fetch(`/api/share_brief/${encodeURIComponent(query)}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    // Reset button state
+                    shareButton.innerHTML = originalIcon;
+                    shareButton.disabled = false;
+                    
+                    if (data.success) {
+                        // Show modal with share URL
+                        document.getElementById('shareUrl').value = data.share_url;
+                        openShareModal();
+                    } else {
+                        alert(`Error: ${data.error || 'Failed to create share link'}`);
+                    }
+                })
+                .catch(error => {
+                    // Reset button state
+                    shareButton.innerHTML = originalIcon;
+                    shareButton.disabled = false;
+                    
+                    console.error('Error sharing brief:', error);
+                    alert('Error creating share link. Please try again.');
+                });
+            }
+        }
+        
+        function copyShareUrl() {
+            const shareUrlInput = document.getElementById('shareUrl');
+            shareUrlInput.select();
+            
+            try {
+                // Execute copy command
+                document.execCommand('copy');
+                
+                // Show success message
+                const copySuccess = document.getElementById('copySuccess');
+                copySuccess.style.display = 'block';
+                
+                // Hide after 3 seconds
+                setTimeout(() => {
+                    copySuccess.style.display = 'none';
+                }, 3000);
+            } catch (err) {
+                console.error('Failed to copy text: ', err);
+                alert('Failed to copy to clipboard. Please copy the URL manually.');
+            }
+            
+            // Deselect the text
+            window.getSelection().removeAllRanges();
+        }
+        
+        function saveNotificationSettings() {
+            const topic = document.getElementById('notificationTopic').textContent;
+            const frequency = document.querySelector('input[name="notifyFrequency"]:checked').value;
+            
+            // Save preference to localStorage
+            localStorage.setItem(`notify_${topic}`, frequency);
+            
+            // Send to server
+            fetch('/api/notifications/save', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    topic: topic,
+                    frequency: frequency
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log(`Saved notification preference for "${topic}": ${frequency}`);
+                } else {
+                    console.error('Failed to save notification settings');
+                }
+            })
+            .catch(error => {
+                console.error('Error saving notification settings:', error);
+            });
+            
+            // Close the modal
+            closeNotificationModal();
+            
+            // Prevent navigation to the details page
+            event.stopPropagation();
+        }
     </script>
     
     <!-- Page loading overlay -->
