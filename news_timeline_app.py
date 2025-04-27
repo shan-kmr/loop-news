@@ -464,6 +464,7 @@ def collect_day_summaries(history):
         best_day = None
         best_priority = float('inf')
         best_summary = None
+        best_entry = None
         
         # Check all entries for this query to find the best summary
         for entry in entries:
@@ -478,6 +479,7 @@ def collect_day_summaries(history):
                         best_priority = priority
                         best_day = day
                         best_summary = summary
+                        best_entry = entry
         
         # If we found a valid summary for this query, store it
         if best_day and best_summary:
@@ -486,6 +488,7 @@ def collect_day_summaries(history):
                 'query': query,
                 'day': best_day,
                 'summary': best_summary,
+                'entry_key': next((k for k, e in history.items() if e == best_entry), None)  # Store the entry key for reference
             }
             
             # Debug info
