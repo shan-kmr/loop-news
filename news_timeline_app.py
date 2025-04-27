@@ -448,17 +448,29 @@ def collect_day_summaries(history):
         "1 month ago": 10
     }
     
+    # First group entries by query
+    query_entries = {}
     for key, entry in history.items():
         query = entry.get('query', '')
         if not query:
             continue
+        
+        if query not in query_entries:
+            query_entries[query] = []
+        query_entries[query].append(entry)
+    
+    # For each query, find the best day summary across all entries
+    for query, entries in query_entries.items():
+        best_day = None
+        best_priority = float('inf')
+        best_summary = None
+        
+        # Check all entries for this query to find the best summary
+        for entry in entries:
+            if 'day_summaries' not in entry or not entry['day_summaries']:
+                continue
             
-        if 'day_summaries' in entry and entry['day_summaries']:
-            best_day = None
-            best_priority = float('inf')
-            best_summary = None
-            
-            # Find the most recent day with a valid summary
+            # Check each day summary in this entry
             for day, summary in entry['day_summaries'].items():
                 if is_valid_summary(summary):
                     priority = day_priority.get(day, 999)  # Default to low priority if not in our list
@@ -466,15 +478,18 @@ def collect_day_summaries(history):
                         best_priority = priority
                         best_day = day
                         best_summary = summary
+        
+        # If we found a valid summary for this query, store it
+        if best_day and best_summary:
+            summary_key = f"{best_day}_{query}"
+            latest_summaries[summary_key] = {
+                'query': query,
+                'day': best_day,
+                'summary': best_summary,
+            }
             
-            # If we found a valid summary, store it
-            if best_day and best_summary:
-                summary_key = f"{best_day}_{query}"
-                latest_summaries[summary_key] = {
-                    'query': query,
-                    'day': best_day,
-                    'summary': best_summary,
-                }
+            # Debug info
+            print(f"Selected best summary for '{query}' from day '{best_day}': {best_summary[:50]}...")
     
     return latest_summaries
 
