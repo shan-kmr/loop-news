@@ -34,6 +34,8 @@ from models import User
 from auth import auth_bp, init_oauth
 from brave_news_api import BraveNewsAPI
 from reddit_api import RedditAPI  # Import our new Reddit API module
+import shared_briefs  # Import our shared briefs module
+import brief_utils  # Import our brief utilities module
 
 # Add dependencies for LLM models
 try:
@@ -1284,6 +1286,25 @@ def history_item(query):
     if search_time is None:
         search_time = datetime.now()
     
+    # Check if we have a valid entry
+    if found and current_query:
+        # Get the entry
+        for key, entry in history.items():
+            if entry['query'] == query:
+                # Use the utility function to prepare template parameters
+                template_params = brief_utils.prepare_brief_for_display(
+                    query=current_query,
+                    entry=entry,
+                    history_entries=history_entries,
+                    history=history,
+                    is_shared_view=False,
+                    user=current_user
+                )
+                
+                # Render the template with the prepared parameters
+                return brief_utils.render_brief_template(template_params)
+
+    # If no entry was found or valid, render the default template
     return render_template('index.html', 
                           query=current_query, 
                           results=results, 
@@ -2733,6 +2754,135 @@ def debug_notifications():
         'historyFiles': results
     })
 
+@app.route('/shared/<shared_id>', methods=['GET'])
+def view_shared_brief(shared_id):
+    """
+    View to display a shared brief without requiring authentication.
+    This route is public and allows anyone with the shared link to view the brief.
+    """
+    # Get shared brief information
+    shared_brief_info = shared_briefs.get_shared_brief(shared_id)
+    
+    if not shared_brief_info:
+        # Shared brief not found
+        return render_template('error.html', 
+                              error="Shared brief not found. The link may be incorrect or the brief has been deleted.",
+                              user=current_user)
+    
+    # Extract brief parameters
+    query = shared_brief_info['query']
+    count = shared_brief_info['count']
+    freshness = shared_brief_info['freshness']
+    
+    # Check if user who shared this exists and get their username for attribution
+    sharer_username = "unknown user"
+    try:
+        user = User.query.filter_by(id=shared_brief_info['user_id']).first()
+        if user:
+            sharer_username = user.username or user.email
+    except Exception as e:
+        print(f"Error getting sharer information: {str(e)}")
+    
+    # Load the user's history to access the brief data
+    user_history = load_search_history(User.query.get(shared_brief_info['user_id']))
+    
+    # Create cache key in the same format as regular history
+    cache_key = f"{query}_{count}_{freshness}"
+    
+    # Try to get the brief from the user's history
+    if cache_key not in user_history:
+        return render_template('error.html', 
+                              error="The requested brief data could not be found.",
+                              user=current_user)
+    
+    # Get the brief entry
+    entry = user_history[cache_key]
+    
+    # For shared briefs, we don't need to display all history entries, just this one
+    history_entries = [{
+        'query': query,
+        'timestamp': entry.get('timestamp', datetime.now().isoformat()),
+        'key': cache_key,
+        'is_shared': True,
+        'shared_id': shared_id,
+        'shared_by': sharer_username
+    }]
+    
+    # Use the utility function to prepare template parameters
+    template_params = brief_utils.prepare_brief_for_display(
+        query=query,
+        entry=entry,
+        history_entries=history_entries,
+        history=user_history,
+        is_shared_view=True,
+        shared_by=sharer_username,
+        user=current_user
+    )
+    
+    # Render the template with the prepared parameters
+    return brief_utils.render_brief_template(template_params)
+
+@app.route('/api/share_brief/<path:query>', methods=['POST'])
+@login_required
+def share_brief_api(query):
+    """API endpoint to share a brief and get a shareable link."""
+    try:
+        # Load user's history
+        history = load_search_history()
+        
+        # Create the cache key to find the right entry
+        count = request.form.get('count', '50')
+        freshness = request.form.get('freshness', 'py')
+        cache_key = f"{query}_{count}_{freshness}"
+        
+        # Check if this brief exists
+        if cache_key not in history:
+            return jsonify({
+                'status': 'error',
+                'message': 'Brief not found in your history.'
+            }), 404
+        
+        # Get the brief entry
+        entry = history[cache_key]
+        
+        # If it's already shared, just return the existing shared ID
+        if 'shared_id' in entry and entry['shared_id']:
+            return jsonify({
+                'status': 'success',
+                'shared_id': entry['shared_id'],
+                'shared_url': url_for('view_shared_brief', shared_id=entry['shared_id'], _external=True)
+            })
+        
+        # Generate a shared ID for this brief
+        shared_id = shared_briefs.share_brief(
+            user_id=str(current_user.id),
+            query=query,
+            count=int(count),
+            freshness=freshness
+        )
+        
+        # Update the entry with shared information
+        entry['shared_id'] = shared_id
+        entry['is_shared'] = True
+        entry['shared_at'] = datetime.now().isoformat()
+        
+        # Save the updated history
+        save_search_history(history)
+        
+        # Return the shared ID and URL
+        return jsonify({
+            'status': 'success',
+            'shared_id': shared_id,
+            'shared_url': url_for('view_shared_brief', shared_id=shared_id, _external=True)
+        })
+        
+    except Exception as e:
+        print(f"Error sharing brief: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f"Error sharing brief: {str(e)}"
+        }), 500
+
 if __name__ == '__main__':
     # Initialize models in background threads to avoid blocking app startup
     if LLAMA_AVAILABLE or OPENAI_AVAILABLE:
@@ -3703,6 +3853,43 @@ if __name__ == '__main__':
             color: #777;
             margin-right: 10px;
         }
+        
+        .shared-banner {
+            background-color: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 10px 15px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        [data-theme="dark"] .shared-banner {
+            background-color: #172554;
+            border-left: 4px solid #3b82f6;
+        }
+        
+        .shared-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+        
+        .shared-info i {
+            color: #3b82f6;
+        }
+        
+        .shared-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .cta-button.small {
+            padding: 5px 10px;
+            font-size: 12px;
+        }
     </style>
 </head>
 <body>
@@ -3835,6 +4022,21 @@ if __name__ == '__main__':
                             </div>
                         </div>
                         
+                        {% if is_shared_view %}
+                        <div class="shared-banner">
+                            <div class="shared-info">
+                                <i class="fas fa-share-alt"></i> Shared by {{ shared_by }}
+                            </div>
+                            {% if user.is_authenticated %}
+                            <div class="shared-actions">
+                                <button class="cta-button small" onclick="saveToMyBriefs('{{ query }}')">
+                                    <i class="fas fa-plus"></i> Save to my briefs
+                                </button>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                        
                         {% if topic_groups and topic_groups|length > 0 and topic_groups[0].day_summary %}
                             <p class="brief-summary">{{ topic_groups[0].day_summary }}</p>
                         {% endif %}
@@ -3916,12 +4118,21 @@ if __name__ == '__main__':
                         <button class="cta-button" onclick="window.location.href='/'" style="background-color: #6b7280;">
                             <i class="fas fa-arrow-left"></i> back to briefs
                         </button>
-                        <button class="cta-button" onclick="forceRefresh('{{ query }}')">
-                            <i class="fas fa-sync-alt"></i> refresh now
-                        </button>
-                        <button class="cta-button" onclick="deleteHistoryItem('{{ query }}')">
-                            <i class="fas fa-trash"></i> delete this brief
-                        </button>
+                        
+                        {% if is_shared_view %}
+                            {% if user.is_authenticated %}
+                            <button class="cta-button" onclick="saveToMyBriefs('{{ query }}')">
+                                <i class="fas fa-plus"></i> save to my briefs
+                            </button>
+                            {% endif %}
+                        {% else %}
+                            <button class="cta-button" onclick="forceRefresh('{{ query }}')">
+                                <i class="fas fa-sync-alt"></i> refresh now
+                            </button>
+                            <button class="cta-button" onclick="deleteHistoryItem('{{ query }}')">
+                                <i class="fas fa-trash"></i> delete this brief
+                            </button>
+                        {% endif %}
                     </div>
                 {% else %}
                     <div style="text-align: center; padding: 50px; color: #666;">
@@ -4104,31 +4315,46 @@ if __name__ == '__main__':
         }
         
         function deleteHistoryItem(query) {
-            if (confirm('are you sure you want to delete this brief?')) {
-                fetch('/api/delete_history/' + encodeURIComponent(query), {
-                    method: 'POST',
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        window.location.href = '/history';
+            if (confirm('Are you sure you want to delete this brief?')) {
+                fetch(`/api/delete_history/${encodeURIComponent(query)}`, {
+                    method: 'POST'
+                }).then(response => {
+                    if (response.ok) {
+                        window.location.href = '/';
                     }
                 });
             }
         }
         
-        function clearHistory() {
-            if (confirm('are you sure you want to clear all briefs?')) {
-                fetch('/api/clear_history', {
-                    method: 'POST',
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        window.location.href = '/';
-                    }
-                });
+        function saveToMyBriefs(query) {
+            // First check if the user is authenticated
+            const userAvatar = document.querySelector('.user-avatar');
+            if (!userAvatar) {
+                alert('You need to be logged in to save this brief.');
+                return;
             }
+            
+            // Create a form with the query and default parameters
+            const formData = new FormData();
+            formData.append('query', query);
+            formData.append('count', '50');  // Default count
+            formData.append('freshness', 'py');  // Default freshness
+            
+            // Submit a search request to create the brief
+            fetch('/', {
+                method: 'POST',
+                body: formData
+            }).then(response => {
+                if (response.ok) {
+                    alert('Brief has been saved to your briefs!');
+                    window.location.href = `/history/${encodeURIComponent(query)}`;
+                } else {
+                    alert('There was an error saving the brief.');
+                }
+            }).catch(error => {
+                console.error('Error saving brief:', error);
+                alert('There was an error saving the brief.');
+            });
         }
         
         function openNewBriefModal() {
