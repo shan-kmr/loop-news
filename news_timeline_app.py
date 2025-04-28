@@ -2380,8 +2380,9 @@ def schedule_notification_checks():
                 
                 print(f"Found {total_notification_topics} total topics with notification settings")
                 
-                # Run the actual notification check
-                check_and_send_notifications()
+                # Run the actual notification check within an application context
+                with app.app_context():
+                    check_and_send_notifications()
                 
                 # Log completion
                 print(f"[{datetime.now().isoformat()}] Completed notification check #{check_count}")
