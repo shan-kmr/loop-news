@@ -282,7 +282,7 @@ def send_notification_email(topic, entry, frequency, recipient_email, new_articl
     msg = MIMEMultipart()
     # Use a generic sender for now, should be configured
     sender_display_name = current_app.config.get('MAIL_SENDER_NAME', "Loop News")
-    sender_email_addr = current_app.config.get('MAIL_USERNAME') # Expects sender email from config
+    sender_email_addr = "shantanu.kum97@gmail.com"
     if not sender_email_addr:
          print("Error: MAIL_USERNAME not configured. Cannot send email.")
          return False
