@@ -2,7 +2,7 @@
 
 A web application that provides a timeline view of news articles, with smart topic grouping and AI-powered summaries.
 
-Loom for how-to-use [here]([url](https://www.loom.com/share/61e00683f56240a0b7c39a933c2cb900?sid=74d80a52-bb0e-4be7-86da-917f5f97aecf)).
+Loom for how-to-use [here.](https://www.loom.com/share/61e00683f56240a0b7c39a933c2cb900?sid=74d80a52-bb0e-4be7-86da-917f5f97aecf)
 
 ## Overview
 
