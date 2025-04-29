@@ -15,8 +15,8 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Union
 
-# Import the TwitterAPI from our twitter_api module
-from twitter_api import TwitterAPI
+# Import the TwitterAPI using relative path
+from .twitter_api import TwitterAPI
 
 class BraveNewsAPI:
     """A class to interact with the Brave News Search API."""

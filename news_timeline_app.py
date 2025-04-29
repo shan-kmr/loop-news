@@ -93,6 +93,7 @@ def init_openai():
     except Exception as e:
         print(f"Error initializing OpenAI client: {str(e)}")
 
+# this function just transfers to summarize_daily_news_openai 
 def summarize_daily_news(day_articles, query):
     """Generate a summary of articles for a specific day using OpenAI"""
     return summarize_daily_news_openai(day_articles, query)
@@ -103,7 +104,7 @@ def summarize_daily_news_openai(day_articles, query):
         return None
     
     try:
-        # Prepare content to summarize
+        # content from articles being concatenated
         article_texts = []
         for article in day_articles:
             title = article.get('title', '')
@@ -114,10 +115,24 @@ def summarize_daily_news_openai(day_articles, query):
         all_articles_text = "\n".join(article_texts[:15])  # Limit to 15 articles to avoid token overflow
         
         # Create messages for the OpenAI API
+        system_prompt = """\
+        You are a helpful assistant that creates concise news summaries.
+        Summarize the key events and topics from these news articles in about 2–3 sentences without adding any new information.
+        Focus on identifying the main developments and common themes.
+        Start directly with the summary content – do not use phrases like 'Here is the summary' or 'The main news is'.
+        """
+
+        user_prompt = f"""\
+        Here are news articles about "{query}" from the same day:
+        {all_articles_text}
+        Please provide a brief summary of the main news for this day.
+        """
+
         messages = [
-            {"role": "system", "content": "You are a helpful assistant that creates concise news summaries. Summarize the key events and topics from these news articles in about 2-3 sentences without adding any new information. Focus on identifying the main developments and common themes. Start directly with the summary content - do not use phrases like 'Here is the summary' or 'The main news is'."},
-            {"role": "user", "content": f"Here are news articles about \"{query}\" from the same day:\n\n{all_articles_text}\n\nPlease provide a brief summary of the main news for this day."}
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt},
         ]
+
         
         # Call the OpenAI API
         response = openai.chat.completions.create(
@@ -135,7 +150,7 @@ def summarize_daily_news_openai(day_articles, query):
         print(f"Error generating summary with OpenAI: {str(e)}")
         return None
 
-# Load search history from JSON file
+# Load search history from JSON file for a user
 def load_search_history(user=None):
     history_file = get_history_file(user=user)
     if os.path.exists(history_file):
@@ -146,7 +161,7 @@ def load_search_history(user=None):
             print(f"Error loading history: {e}")
     return {}
 
-# Save search history to JSON file
+# Save search history to JSON file - update
 def save_search_history(history, user=None):
     history_file = get_history_file(user=user)
     try:
@@ -159,15 +174,14 @@ def save_search_history(history, user=None):
     except Exception as e:
         print(f"Error saving history: {e}")
 
-# Get search history file path
+# Get search history file path for a user and feed the path to load_search_history
 def get_history_file(user=None):
     """
-    Get search history file path
-    
     Args:
-        user: Optional User object. If not provided and current_user is authenticated,
-              will use current_user. For background tasks where current_user is not 
-              available, this allows passing None to get the default location.
+        user: Optional User object. 
+        If not provided and current_user is authenticated, will use current_user. 
+        For background tasks where current_user is not  available, this allows passing 
+        None to get the default location.
     """
     try:
         # First try with the provided user parameter
@@ -189,6 +203,15 @@ def get_history_file(user=None):
     os.makedirs(default_dir, exist_ok=True)
     return os.path.join(default_dir, 'search_history.json')
 
+
+""" 
+This function essentially checks if there is any new content in the news and updates the results accordingly.
+It also updates the history with the new results.
+Sorts the articles by age in seconds to maintain timeline order.
+Retrieves fresh results from the Brave News API and Reddit API.
+Combines the results and removes duplicates.
+Finds new content and updates the history with the new results.
+"""
 def update_current_day_results(query, count, freshness, old_results):
     """
     Refresh all articles from the last search date to the current date,
@@ -214,8 +237,7 @@ def update_current_day_results(query, count, freshness, old_results):
     
     try:
         # For frequent refreshes (every 60 minutes), default to past day
-        # For longer term refreshes, use the original freshness or at least past week
-        refresh_freshness = 'pd'  # Default to past day for 60-minute refreshes
+        refresh_freshness = 'pd'  
         
         # If the original freshness was longer (pw, pm, py), keep that for non-frequent refreshes
         if freshness in ['pw', 'pm', 'py'] and CACHE_VALIDITY_HOURS > 24:
@@ -254,8 +276,9 @@ def update_current_day_results(query, count, freshness, old_results):
                 print(f"Error getting Reddit results: {str(e)}")
                 reddit_results = None
         
+        # If we have Reddit results but no fresh news results, combine them with old results
+
         if not fresh_results or 'results' not in fresh_results or not old_results or 'results' not in old_results:
-            # If we have Reddit results but no fresh news results, combine them with old results
             if reddit_results and 'results' in reddit_results and old_results and 'results' in old_results:
                 # Combine Reddit results with old results
                 combined_results = old_results.copy()
@@ -548,12 +571,13 @@ def index():
         if len(unique_queries) >= 3 and query not in unique_queries:
             error = "You've reached the maximum of 3 briefs. Please remove one before adding another."
         elif query:
-            # Check if we already have cached results that are still valid
+            # Cache key is a unique identifier for the query, count, and freshness
             cache_key = f"{query}_{count}_{freshness}"
             cached_entry = history.get(cache_key)
             use_cache = False
             needs_day_refresh = False
             
+            # If there is a cached entry and force_refresh is not True, use the cache
             if cached_entry and not force_refresh:
                 # Store current time for comparison, ensuring naive datetime (no timezone)
                 now = datetime.now()
@@ -2613,6 +2637,8 @@ def debug_notifications():
         'historyFiles': results
     })
 
+# This file is deprecated.
+'''
 if __name__ == '__main__':
     # Initialize models in background threads to avoid blocking app startup
     if OPENAI_AVAILABLE:
@@ -2640,4 +2666,5 @@ if __name__ == '__main__':
     print("NOTE: Set the following environment variables for Google authentication:")
     print("export GOOGLE_CLIENT_ID=your_google_client_id")
     print("export GOOGLE_CLIENT_SECRET=your_google_client_secret")
-    app.run(host='0.0.0.0', port=5000, debug=True) 
+    # app.run(host='0.0.0.0', port=5000, debug=True) # This file is deprecated.
+'''

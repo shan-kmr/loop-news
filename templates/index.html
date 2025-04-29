@@ -1261,7 +1261,7 @@
     <div id="requestAccessModal" class="modal">
         <div class="modal-content">
             <h2 class="modal-title">request access</h2>
-            <form method="post" action="{{ url_for('request_access_redirect') }}" id="requestAccessForm">
+            <form method="post" action="{{ url_for('news.request_access') }}" id="requestAccessForm">
                 <input type="email" name="email" placeholder="your email address" class="search-box" required>
                 <div class="modal-buttons">
                     <button type="button" class="modal-button cancel-button" onclick="closeRequestAccessModal()">cancel</button>
