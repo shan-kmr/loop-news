@@ -1,16 +1,16 @@
-# Loop: Track All Moves in a Single Timeline
+# Loop: Track All Moves in a Single Timeline. Visit [loopnow.co](https://loopnow.co).
 
 A web application that provides a timeline view of news articles, with smart topic grouping and AI-powered summaries.
 
-![Loop Timeline Screenshot](https://via.placeholder.com/800x450.png?text=Loop+Timeline+Screenshot)
+Loom for how-to-use [here.](https://www.loom.com/share/61e00683f56240a0b7c39a933c2cb900?sid=74d80a52-bb0e-4be7-86da-917f5f97aecf)
 
 ## Overview
 
-Loop (formerly News Timeline) is a Flask-based web application that allows you to track topics through a chronological timeline, organized by day and topic. The application features:
+Loop is a Flask-based web application that allows you to track topics through a chronological timeline, organized by day and topic. The application features:
 
 - Timeline view of news articles sorted by recency
 - Topic-based grouping of related articles with expandable/collapsible sections
-- AI-powered daily summaries using OpenAI GPT-4.1 Nano (with Llama 3.2 as an optional alternative)
+- AI-powered hourly/daily summaries using OpenAI GPT-4.1 Nano (with Llama 3.2 as an optional alternative)
 - User account system with 3-brief limit per user
 - Light and dark mode with automatic theme detection
 - Intelligent caching with 60-minute auto-refresh
@@ -270,10 +270,6 @@ For production deployment:
 7. Consider using a CDN for static assets
 8. Implement proper logging and monitoring
 9. Add error tracking
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgments
 
