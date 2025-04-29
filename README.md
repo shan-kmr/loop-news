@@ -1,4 +1,4 @@
-# Loop: Track All Moves in a Single Timeline. Visit loopnow.co.
+# Loop: Track All Moves in a Single Timeline. Visit [loopnow.co](https://loopnow.co).
 
 A web application that provides a timeline view of news articles, with smart topic grouping and AI-powered summaries.
 
