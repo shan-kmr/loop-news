@@ -295,11 +295,11 @@ def send_notification_email(topic, entry, frequency, recipient_email, new_articl
 
     # Send email using configured SMTP settings
     try:
-        smtp_server = current_app.config.get('MAIL_SERVER')
+        smtp_server = "smtp.gmail.com"
         smtp_port = current_app.config.get('MAIL_PORT', 587) # Default to 587 for TLS
         mail_use_tls = current_app.config.get('MAIL_USE_TLS', True)
-        mail_username = current_app.config.get('MAIL_USERNAME')
-        mail_password = current_app.config.get('MAIL_PASSWORD')
+        mail_username = "shantanu.kum97@gmail.com"
+        mail_password = "gqgajschaboevchb"
 
         if not all([smtp_server, mail_username, mail_password]):
             print("Error: Mail server settings (MAIL_SERVER, MAIL_USERNAME, MAIL_PASSWORD) incomplete.")
