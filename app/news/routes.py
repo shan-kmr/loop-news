@@ -48,16 +48,12 @@ def index():
     if brave_api is None:
         # Check config directly for a more informative error before giving up
         if not current_app.config.get("BRAVE_API_KEY"):
-             error_msg = "BRAVE_API_KEY not set. Please configure it and restart." 
+             error_msg = "BRAVE_API_KEY not set. Please configure it and restart."
              print(error_msg)
-             # Render error template or flash message
-             flash(error_msg, 'error')
-             # Render index but with an error state if possible
-             return render_template('index.html', 
-                                    query='', results=None, search_time=None,
-                                    history_entries=[], error=error_msg,
-                                    topic_groups=[], day_summaries={}, history={},
-                                    active_tab="search", user=current_user)
+             # Render the dedicated error page
+             return render_template('error.html',
+                                    error=error_msg,
+                                    user=current_user)
         else:
             # Key exists but client failed to initialize - less common
              flash("Failed to initialize Brave News API client.", 'error')
@@ -78,7 +74,7 @@ def index():
     if request.method == 'POST' and current_user.is_authenticated:
         query = request.form.get('query', '').strip().lower() # Standardize query
         count = int(request.form.get('count', 50)) # Default 50
-        freshness = request.form.get('freshness', 'py') # Default past year
+        freshness = request.form.get('freshness', 'pm') # Default past month
         similarity_threshold = float(request.form.get('similarity_threshold', 0.4)) # Default high
         # force_refresh handled by GET param or logic below
         
@@ -386,8 +382,18 @@ def history_item(query):
             break
             
     if not target_entry:
-        flash(f"Brief '{query}' not found in your history.", 'error')
-        return redirect(url_for('news.index'))
+        # If brief not found, check if we can even fetch it (API key needed)
+        brave_api, _ = _get_api_clients() # Check API status
+        if brave_api is None and not current_app.config.get("BRAVE_API_KEY"):
+            error_msg = f"Brief '{query}' not found and BRAVE_API_KEY is not set. Cannot fetch new results."
+            print(error_msg)
+            return render_template('error.html', error=error_msg, user=current_user)
+        else:
+            # If API key *is* present, maybe it can be fetched as new? 
+            # For now, keep original behavior: flash error and redirect
+            # TODO: Optionally implement fetching as a new brief here
+            flash(f"Brief '{query}' not found in your history.", 'error')
+            return redirect(url_for('news.index'))
 
     print(f"Displaying history item: '{query}'")
     
