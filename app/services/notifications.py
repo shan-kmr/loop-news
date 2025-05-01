@@ -28,6 +28,9 @@ from ..utils.text import is_valid_summary, extract_age_in_seconds
 from ..utils.filters import day_group_filter
 from .openai_service import summarize_daily_news # For refreshing summaries
 
+# Global lock for initializing the scheduler
+_scheduler_lock = threading.Lock()
+
 def save_notification_settings(user_email, topic, frequency):
     """
      Save notification settings to the appropriate history file.
@@ -66,19 +69,19 @@ def save_notification_settings(user_email, topic, frequency):
                 
             entry_updated = False
             # Look for the topic in this history file
-            for entry in history.items():
-                if entry.get('query') == topic:
+            for topic_key, entry_data in history.items():
+                if entry_data.get('query') == topic:
                     # Ensure notifications structure exists
-                    if 'notifications' not in entry or not isinstance(entry['notifications'], dict):
-                        entry['notifications'] = {'recipients': [], 'last_sent': {}}
-                    if 'recipients' not in entry['notifications'] or not isinstance(entry['notifications']['recipients'], list):
-                        entry['notifications']['recipients'] = []
-                    if 'last_sent' not in entry['notifications'] or not isinstance(entry['notifications']['last_sent'], dict):
-                        entry['notifications']['last_sent'] = {}
+                    if 'notifications' not in entry_data or not isinstance(entry_data['notifications'], dict):
+                        entry_data['notifications'] = {'recipients': [], 'last_sent': {}}
+                    if 'recipients' not in entry_data['notifications'] or not isinstance(entry_data['notifications']['recipients'], list):
+                        entry_data['notifications']['recipients'] = []
+                    if 'last_sent' not in entry_data['notifications'] or not isinstance(entry_data['notifications']['last_sent'], dict):
+                        entry_data['notifications']['last_sent'] = {}
                     
                     # Check if this email is already in recipients
                     recipient_exists = False
-                    for recipient in entry['notifications']['recipients']:
+                    for recipient in entry_data['notifications']['recipients']:
                         if recipient.get('email') == user_email:
                             recipient['frequency'] = frequency # Update existing
                             recipient_exists = True
@@ -86,7 +89,7 @@ def save_notification_settings(user_email, topic, frequency):
                     
                     # Add new recipient if not found
                     if not recipient_exists:
-                        entry['notifications']['recipients'].append({
+                        entry_data['notifications']['recipients'].append({
                             'email': user_email,
                             'frequency': frequency
                         })
@@ -348,19 +351,22 @@ def send_notification_email(topic, entry, frequency, recipient_email, new_articl
 
 def process_history_file(file_path, now_eastern, updated_files_dict):
     """Process a single history file for notifications."""
+    thread_id = threading.get_ident() # Get thread ID
+    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] START process_history_file for: {file_path}")
+
     if not os.path.exists(file_path):
-        print(f"History file path does not exist: {file_path}")
+        print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] History file path does not exist: {file_path}")
         return
         
     try:
         with open(file_path, 'r') as f:
             history = json.load(f)
     except json.JSONDecodeError:
-        print(f"Error decoding JSON from history file: {file_path}. Skipping.")
+        print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Error decoding JSON from history file: {file_path}. Skipping.")
         # Consider backing up corrupted file here
         return
     except Exception as e:
-        print(f"Error loading history file {file_path}: {e}")
+        print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Error loading history file {file_path}: {e}")
         return
     
     file_updated = False
@@ -387,9 +393,11 @@ def process_history_file(file_path, now_eastern, updated_files_dict):
             frequency = recipient.get('frequency')
             
             if not email or not frequency or frequency not in ['hourly', 'daily']:
-                print(f"Skipping invalid recipient config for topic '{topic}': {recipient}")
+                print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Skipping invalid recipient config for topic '{topic}': {recipient}")
                 continue # Skip invalid recipient config
             
+            print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Checking recipient {email} for topic '{topic}' (Freq: {frequency}) in file {file_path}")
+
             # Get last sent time, ensuring the structure is correct
             last_sent_dict = notifications.get('last_sent')
             if not isinstance(last_sent_dict, dict):
@@ -404,7 +412,7 @@ def process_history_file(file_path, now_eastern, updated_files_dict):
             # Determine if notification is due
             if not last_sent_str:
                 should_send = True # Never sent before
-                print(f"Notification due for '{topic}' to {email} (never sent before). Frequency: {frequency}")
+                print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] -> Decision: should_send = True (never sent before) for {email}, topic '{topic}'")
             else:
                 try:
                     last_sent_dt = datetime.fromisoformat(last_sent_str)
@@ -414,30 +422,34 @@ def process_history_file(file_path, now_eastern, updated_files_dict):
                     
                     last_sent_eastern = last_sent_dt.astimezone(now_eastern.tzinfo)
                     time_diff = now_eastern - last_sent_eastern
-                    
+
+                    # --- ORIGINAL CODE ---
                     if frequency == 'hourly' and time_diff.total_seconds() >= 3600: # 1 hour
                         should_send = True
                     elif frequency == 'daily' and time_diff.total_seconds() >= 86400: # 24 hours
-                         # Optional: Add logic for specific time of day for daily emails
                         should_send = True
-                        
+                    # --- END ORIGINAL CODE ---
+
                     if should_send:
-                         print(f"Notification due for '{topic}' to {email}. Last sent: {last_sent_eastern.strftime('%Y-%m-%d %H:%M:%S %Z')}. Frequency: {frequency}")
-                         
+                        print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] -> Decision: should_send = True (time threshold met) for {email}, topic '{topic}'. Last sent: {last_sent_eastern.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                    # else: # Optional: log when not sending due to time
+                    #     print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] -> Decision: should_send = False (time threshold NOT met) for {email}, topic '{topic}'. Time diff: {time_diff}")
+
                 except Exception as e:
-                    print(f"Error parsing last sent time '{last_sent_str}' for {email}, topic '{topic}': {e}. Assuming send is due.")
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Error parsing last sent time '{last_sent_str}' for {email}, topic '{topic}': {e}. Assuming send is due.")
                     should_send = True
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] -> Decision: should_send = True (error parsing time) for {email}, topic '{topic}'")
             
             # If notification is due, proceed with refresh and send logic
             if should_send:
-                print(f"Processing due notification for '{topic}' ({frequency}) to {email}")
+                print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Processing due notification for '{topic}' ({frequency}) to {email}")
                 
                 has_new_content = False
                 new_articles_list = []
                 previous_today_summary = entry.get('day_summaries', {}).get('Today')
                 
                 # Refresh content - requires app context for API keys etc.
-                print(f"Refreshing content for '{topic}' before sending notification...")
+                print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Refreshing content for '{topic}' before sending notification...")
                 results = entry.get('results')
                 
                 updated_results_data = None
@@ -452,23 +464,23 @@ def process_history_file(file_path, now_eastern, updated_files_dict):
                     with current_app.app_context():
                          updated_results_data, days_with_new = update_current_day_results(topic, count, freshness, results)
                 except RuntimeError as e:
-                    print(f"RuntimeError (likely missing app context) during content refresh for '{topic}': {e}")
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] RuntimeError (likely missing app context) during content refresh for '{topic}': {e}")
                     # Decide how to proceed: skip send, send old content?
                     print("Skipping notification send due to refresh error.")
                     continue # Skip to next recipient/topic
                 except Exception as e:
-                     print(f"Unexpected error during content refresh for '{topic}': {e}")
+                     print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Unexpected error during content refresh for '{topic}': {e}")
                      traceback.print_exc()
                      print("Skipping notification send due to refresh error.")
                      continue # Skip to next recipient/topic
                 
                 # Check if content actually updated
                 if updated_results_data != results:
-                    print(f"Content updated for '{topic}'.")
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Content updated for '{topic}'.")
                     # Update entry in memory
                     entry['results'] = updated_results_data
                     entry['timestamp'] = datetime.now().isoformat()
-                    file_updated = True # Mark file for saving later
+                    file_updated = True # Mark file for saving
                     
                     # Find truly new articles (comparing URLs)
                     old_urls = {a.get('url') for a in results.get('results', []) if a.get('url')}
@@ -481,7 +493,7 @@ def process_history_file(file_path, now_eastern, updated_files_dict):
                          new_articles_full = [a for a in updated_results_data.get('results', []) if a.get('url') in truly_new_urls]
                          new_articles_full.sort(key=extract_age_in_seconds)
                          new_articles_list = new_articles_full[:3] # Limit to 3 newest
-                         print(f"Found {len(new_articles_list)} new articles to include in notification for '{topic}'.")
+                         print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Found {len(new_articles_list)} new articles for '{topic}'.")
 
                     # Regenerate summaries if needed
                     if 'day_summaries' not in entry or not isinstance(entry['day_summaries'], dict):
@@ -504,58 +516,65 @@ def process_history_file(file_path, now_eastern, updated_files_dict):
                                  if day in articles_by_day:
                                      # Check if summary needs update (missing, invalid, or Today)
                                      if day == 'Today' or not is_valid_summary(entry['day_summaries'].get(day)):
-                                         print(f"Generating/Refreshing summary for {day} for topic '{topic}'")
+                                         print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Generating/Refreshing summary for {day} for topic '{topic}'")
                                          day_summary = summarize_daily_news(articles_by_day[day], topic)
                                          if is_valid_summary(day_summary):
                                              entry['day_summaries'][day] = day_summary
                                              file_updated = True
-                                             print(f"Generated/Updated {day} summary: {day_summary[:50]}...")
+                                             print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Generated/Updated {day} summary: {day_summary[:50]}...")
                                              # Check if Today's summary specifically changed
                                              if day == 'Today' and previous_today_summary != day_summary:
-                                                 print("Today's summary has changed.")
+                                                 print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Today's summary has changed for '{topic}'.")
                                                  has_new_content = True
                     except RuntimeError as e:
-                         print(f"RuntimeError (likely missing app context) during summary generation for '{topic}': {e}")
+                         print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] RuntimeError (likely missing app context) during summary generation for '{topic}': {e}")
                     except Exception as e:
-                         print(f"Unexpected error during summary generation for '{topic}': {e}")
+                         print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Unexpected error during summary generation for '{topic}': {e}")
                          traceback.print_exc()
                          
                 else:
-                    print(f"Content for '{topic}' did not change after refresh.")
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Content for '{topic}' did not change after refresh.")
+                    has_new_content = False # Explicitly false if no data diff
                 
                 # Decide whether to actually send based on frequency and new content
                 should_actually_send = True
                 if frequency == 'hourly' and not has_new_content:
-                    print(f"Hourly frequency, but no new content detected for '{topic}'. Skipping send to {email}.")
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] -> Decision: should_actually_send = False (hourly, no new content) for {email}, topic '{topic}'.")
                     should_actually_send = False
-                    # Crucially, DO NOT update last_sent time if we skip due to no new content
-                    # This allows the next check to correctly evaluate the time diff again.
-                
+                elif not should_send: # This case should technically not be reachable if outer should_send is False, but good check
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] -> Decision: should_actually_send = False (should_send was false) for {email}, topic '{topic}'.")
+                    should_actually_send = False
+                else:
+                     print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] -> Decision: should_actually_send = True for {email}, topic '{topic}'.")
+
                 # Send the email if required
                 if should_actually_send:
                     # Send email (needs app context for render_template and mail config)
                     email_sent = False
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Attempting to send email to {email} for topic '{topic}'...")
                     try:
                          with current_app.app_context():
                              email_sent = send_notification_email(topic, entry, frequency, email, new_articles_list)
                     except RuntimeError as e:
-                         print(f"RuntimeError (likely missing app context) during email send for '{topic}': {e}")
+                         print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] RuntimeError (likely missing app context) during email send for '{topic}': {e}")
                     except Exception as e:
-                         print(f"Unexpected error during email send for '{topic}': {e}")
+                         print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Unexpected error during email send for '{topic}': {e}")
                          traceback.print_exc()
 
                     # Update last sent timestamp ONLY if email was sent successfully
                     if email_sent:
                         current_iso_time = datetime.now(pytz.utc).isoformat() # Store in UTC ISO format
-                        print(f"Successfully sent notification for '{topic}' to {email}, updating last_sent to {current_iso_time}")
+                        print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Successfully sent email for '{topic}' to {email}, updating last_sent to {current_iso_time}")
                         notifications['last_sent'][email] = current_iso_time
                         file_updated = True # Mark file for saving
                     else:
-                         print(f"Failed to send notification email for '{topic}' to {email}. Last sent time NOT updated.")
+                         print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Failed to send notification email for '{topic}' to {email}. Last sent time NOT updated.")
 
     # After processing all entries, if file was updated, add it to the dict for saving
     if file_updated:
         updated_files_dict[file_path] = history
+
+    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] END process_history_file for: {file_path}")
 
 def check_and_send_notifications():
     """Check for due notifications and send emails by scanning all history files."""
@@ -599,63 +618,95 @@ def check_and_send_notifications():
     
     # Save any history files that were modified
     if updated_history_files_to_save:
-        print(f"Saving updates to {len(updated_history_files_to_save)} history file(s)...")
+        thread_id = threading.get_ident() # Get thread ID for context
+        print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Found {len(updated_history_files_to_save)} history file(s) to save.")
         for file_path, history_data in updated_history_files_to_save.items():
+            # Extract last_sent for logging (handle potential errors)
+            last_sent_preview = 'Error extracting last_sent'
+            try:
+                # Example: Assume we want the first recipient's last_sent for the first topic
+                # This is just a sample, might need adjustment based on your exact structure/needs
+                first_topic_key = next(iter(history_data))
+                first_recipient_email = history_data[first_topic_key].get('notifications', {}).get('recipients', [{}])[0].get('email')
+                if first_recipient_email:
+                    last_sent_preview = history_data[first_topic_key].get('notifications', {}).get('last_sent', {}).get(first_recipient_email, 'Not set')
+                else:
+                    last_sent_preview = 'No recipients found'
+            except Exception as log_e:
+                last_sent_preview = f'Error extracting: {log_e}'
+
+            print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Attempting to save {file_path}. Contains last_sent preview: {last_sent_preview}")
             try:
                 # Ensure directory exists before saving
                 dir_name = os.path.dirname(file_path)
                 if dir_name:
                      os.makedirs(dir_name, exist_ok=True)
-                     
+
                 with open(file_path, 'w') as f:
                     json.dump(history_data, f, indent=2)
-                print(f"Successfully saved updates to {file_path}")
+                print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Successfully saved updates to {file_path}")
             except Exception as e:
-                print(f"Error saving updated history file {file_path}: {e}")
+                print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Error saving updated history file {file_path}: {e}")
                 traceback.print_exc()
     else:
-         print("No history files required saving after notification check.")
-         
-    print(f"[{datetime.now(eastern).isoformat()}] Notification check finished.")
+         thread_id = threading.get_ident()
+         print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] No history files required saving after notification check.")
+
+    thread_id = threading.get_ident()
+    print(f"[{datetime.now(eastern).isoformat()}][Thread:{thread_id}] Notification check finished.")
 
 def schedule_notification_checks(app):
-    """Start a background thread to periodically check for notifications."""
+    """Start a background thread to periodically check for notifications, ensuring only one starts."""
     
-    # Check if scheduler is already running (e.g., during reload)
-    if hasattr(app, 'notification_scheduler_running') and app.notification_scheduler_running:
-        print("Notification scheduler thread already seems to be running.")
-        return
-        
-    def check_notifications_thread():
-        check_count = 0
-        # Prevent running immediately on start, wait a bit
-        print("Notification thread started, initial wait...")
-        time.sleep(60) # Wait 1 minute before first check
-        
-        while True:
-            try:
-                check_count += 1
-                print(f"[{datetime.now().isoformat()}] Running notification check #{check_count}")
-                
-                # Run the actual check within the application context
-                # The app object is passed to the scheduler function
-                with app.app_context():
-                    check_and_send_notifications()
-                
-                print(f"[{datetime.now().isoformat()}] Completed notification check #{check_count}")
-                
-            except Exception as e:
-                print(f"Error in notification check thread loop: {e}")
-                traceback.print_exc()
+    # Use a lock to prevent race conditions when checking/starting the thread
+    with _scheduler_lock:
+        # Check if scheduler is already marked as running on this app instance
+        if hasattr(app, 'notification_scheduler_running') and app.notification_scheduler_running:
+            print("Notification scheduler thread already marked as running.")
+            return
             
-            # Check every 15 minutes (900 seconds)
-            wait_time = 900 
-            print(f"Next notification check scheduled in {wait_time / 60} minutes.")
-            time.sleep(wait_time)
-    
-    # Create and start the thread
-    thread = threading.Thread(target=check_notifications_thread, name="NotificationScheduler")
-    thread.daemon = True # Allows app to exit even if thread is running
-    thread.start()
-    app.notification_scheduler_running = True # Flag that scheduler is running
-    print("Started notification check background thread.") 
+        print("Attempting to start notification scheduler thread...")
+        
+        def check_notifications_thread():
+            check_count = 0
+            # Prevent running immediately on start, wait a bit
+            print("Notification thread started, initial wait...")
+            time.sleep(60) # Wait 1 minute before first check
+            
+            while True:
+                try:
+                    check_count += 1
+                    # Add thread ID to log
+                    thread_id = threading.get_ident()
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Running notification check #{check_count}")
+                    
+                    # Run the actual check within the application context
+                    # The app object is passed to the scheduler function
+                    with app.app_context():
+                        check_and_send_notifications()
+                    
+                    # Add thread ID to log
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Completed notification check #{check_count}")
+
+                except Exception as e:
+                    # Add thread ID to log
+                    thread_id = threading.get_ident()
+                    print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Error in notification check thread loop: {e}")
+                    traceback.print_exc()
+
+                # Check every 15 minutes (900 seconds)
+                wait_time = 900 # Original value
+                # wait_time = 60 # TEMPORARY TEST VALUE (1 minute) - RE-ADDED <-- REMOVED
+                # Add thread ID to log
+                thread_id = threading.get_ident()
+                print(f"[{datetime.now().isoformat()}][Thread:{thread_id}] Next notification check scheduled in {wait_time / 60} minutes.")
+                time.sleep(wait_time)
+        
+        # Create and start the thread
+        thread = threading.Thread(target=check_notifications_thread, name="NotificationScheduler")
+        thread.daemon = True # Allows app to exit even if thread is running
+        thread.start()
+        
+        # Crucially, mark the app instance *after* starting the thread but *within* the lock
+        app.notification_scheduler_running = True 
+        print("Successfully started notification check background thread and marked app instance.") 

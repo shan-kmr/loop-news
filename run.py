@@ -1,5 +1,6 @@
 import os
 from app import create_app
+from app.services.notifications import schedule_notification_checks # Import the scheduler function
 
 # Load configuration from config.py by default
 # You can switch configs by setting the environment variable, e.g., 
@@ -15,6 +16,11 @@ if __name__ == '__main__':
     port = int(os.environ.get('FLASK_RUN_PORT', 5000))
     debug = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
     
+    # Start the notification scheduler *after* the app is created
+    # This ensures it only runs once in the main process
+    print("Attempting to start notification scheduler from run.py...")
+    schedule_notification_checks(app)
+
     # Print startup messages (similar to the old ones)
     print("Starting Loop News application...")
     print(f" * Environment: {'development' if debug else 'production'}")
@@ -54,5 +60,5 @@ if __name__ == '__main__':
         print(" * Mail settings found.")
 
     # Start the Flask development server
-    # The notification scheduler is started within create_app based on environment
-    app.run(host=host, port=port, debug=debug) 
+    # The notification scheduler is started above ^^^^
+    app.run(host=host, port=port, debug=debug, use_reloader=False) 
