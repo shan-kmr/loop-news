@@ -5,6 +5,7 @@ from flask_login import LoginManager, login_user, logout_user, login_required, c
 from .oauth import oauth # Import the initialized OAuth object
 from ..models import User
 from .whitelist import is_email_allowed 
+from ..analytics.events import track_user_session
 
 
 # Setup LoginManager
@@ -67,6 +68,9 @@ def callback():
             # Log the user in using Flask-Login
             login_user(user)
             print(f"User {user.email} logged in successfully.")
+            
+            # Track login event for analytics
+            track_user_session(user.id, 'login')
 
             # Redirect to the main application page after login (news.index)
             next_url = session.pop('next', url_for('news.index'))
@@ -89,6 +93,8 @@ def logout():
     """Log the current user out."""
     if current_user and hasattr(current_user, 'email'):
          print(f"Logging out user: {current_user.email}")
+         # Track logout event for analytics
+         track_user_session(current_user.id, 'logout')
     else:
          print("Logging out user (no email info available).")
     logout_user()

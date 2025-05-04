@@ -17,6 +17,11 @@ from .utils.text import is_valid_summary
 from .services.openai_service import init_openai
 from .services.notifications import schedule_notification_checks
 
+# Import analytics module
+from .analytics import init_analytics
+from .analytics.database import register_db_teardown
+from .analytics.middleware import setup_request_tracking
+
 def create_app(config_object='config.Config'): # Use a default config path
     """Application factory pattern."""
     # Tell Flask where to find templates relative to the app directory
@@ -54,12 +59,20 @@ def create_app(config_object='config.Config'): # Use a default config path
          print("OpenAI API Key not found in config. OpenAI features disabled.")
          # Explicitly mark as unavailable in app context?
          # app.config['OPENAI_AVAILABLE'] = False 
+    
+    # Initialize analytics module
+    init_analytics(app)
+    register_db_teardown(app)
+    setup_request_tracking(app)
+    print("Analytics module initialized.")
 
     # Register Blueprints
     from .auth.routes import auth_bp
     from .news.routes import news_bp
+    from .analytics.routes import analytics_bp
     app.register_blueprint(auth_bp, url_prefix='/auth')
     app.register_blueprint(news_bp, url_prefix='/') # Register news at root
+    app.register_blueprint(analytics_bp, url_prefix='/analytics')
     print("Blueprints registered.")
 
     # Register Jinja Filters and Globals
