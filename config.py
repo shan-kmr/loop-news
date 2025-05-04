@@ -28,6 +28,3 @@ MAIL_DEFAULT_SENDER = os.environ.get("MAIL_DEFAULT_SENDER", "shantanu.kum97@gmai
 
 # Cache settings
 CACHE_VALIDITY_HOURS = 1 
-
-# Analytics settings
-ANALYTICS_ENABLED = os.environ.get("ANALYTICS_ENABLED", "True").lower() == "true" 

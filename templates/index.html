@@ -5,8 +5,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
-    <!-- Analytics script -->
-    <script src="/analytics/analytics.js"></script>
     <style>
         :root {
             --bg-color: #f8f8f8;
@@ -933,11 +931,6 @@
     </style>
 </head>
 <body>
-    <!-- Add a hidden input with the current query for analytics -->
-    {% if query %}
-    <input type="hidden" id="current-query" value="{{ query }}">
-    {% endif %}
-
     <header>
         <div class="logo">loop: track all moves in a single timeline.</div>
         <nav>
@@ -1120,7 +1113,7 @@
                                                     {% endif %}
                                                     <div class="timeline-desc">{{ article.get('description', 'no description available') }}</div>
                                                     <div class="article-url-summary">{{ article.get('title', 'no title').split(' - ')[0] if ' - ' in article.get('title', 'no title') else article.get('title', 'no title').split('|')[0] if '|' in article.get('title', 'no title') else article.get('title', 'no title') }}</div>
-                                                    <a href="{{ article.get('url', '#') }}" class="timeline-link article-link" data-brief="{{ query }}" target="_blank">{{ article.get('url', 'no url available') }}</a>
+                                                    <a href="{{ article.get('url', '#') }}" class="timeline-link" target="_blank">{{ article.get('url', 'no url available') }}</a>
                                                 </div>
                                             {% endfor %}
                                         </div>

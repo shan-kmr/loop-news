@@ -14,7 +14,6 @@ from ..utils.history import (
 from ..utils.grouping import group_articles_by_topic 
 from ..utils.text import extract_age_in_seconds, is_valid_summary
 from ..auth.whitelist import add_email_to_waitlist # For request access
-from ..analytics.events import track_brief_interaction, track_search_behavior
 
 # Create Blueprint
 news_bp = Blueprint('news', __name__)
@@ -79,15 +78,6 @@ def index():
         similarity_threshold = float(request.form.get('similarity_threshold', 0.4)) # Default high
         # force_refresh handled by GET param or logic below
         
-        # Track search behavior
-        if query:
-            filters = {
-                'count': count,
-                'freshness': freshness,
-                'similarity_threshold': similarity_threshold
-            }
-            track_search_behavior(current_user.id, query, filters)
-        
         # Check topic limit
         unique_queries = {entry.get('query') for entry in history.values() if entry.get('query')}
         if len(unique_queries) >= 3 and query not in unique_queries:
@@ -97,15 +87,6 @@ def index():
         
         elif query:
             print(f"New brief submission for query: '{query}'")
-            
-            # Track brief creation
-            parameters = {
-                'count': count,
-                'freshness': freshness,
-                'similarity_threshold': similarity_threshold
-            }
-            track_brief_interaction(current_user.id, query, 'create', parameters)
-            
             cache_key = f"{query}_{count}_{freshness}" # Simple cache key
             cached_entry = history.get(cache_key)
             use_cache = False
@@ -416,9 +397,6 @@ def history_item(query):
 
     print(f"Displaying history item: '{query}'")
     
-    # Track brief view
-    track_brief_interaction(current_user.id, query, 'view')
-    
     # Extract data from the found entry
     results = target_entry.get('results')
     search_time = datetime.fromisoformat(target_entry['timestamp']) if target_entry.get('timestamp') else datetime.now()
@@ -467,14 +445,6 @@ def history_item(query):
             history[target_key] = target_entry 
             save_search_history(history, user=current_user)
             print(f"Saved refreshed data and regenerated groups/summaries for '{query}'.")
-            
-            # Track brief modification
-            track_brief_interaction(current_user.id, query, 'modify', {
-                'count': count,
-                'freshness': freshness,
-                'similarity_threshold': similarity_threshold,
-                'action': 'refresh'
-            })
             
         else:
             print(f"No new content found during refresh for '{query}'. Updating timestamp only.")
@@ -539,9 +509,6 @@ def delete_history_item_api(query):
     for key in items_to_remove:
         history.pop(key, None)
         print(f"Deleted history item with key: {key} (Query: {query})")
-    
-    # Track brief deletion
-    track_brief_interaction(current_user.id, query, 'delete')
     
     save_search_history(history, user=current_user)
     flash(f'Brief "{query}" deleted.', 'success') # Provide user feedback
