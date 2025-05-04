@@ -5,9 +5,11 @@ Analytics routes for tracking events that need their own endpoints.
 import os
 import traceback
 import json
+import sqlite3
 from flask import Blueprint, request, redirect, current_app, jsonify, send_from_directory, url_for
 from flask_login import current_user, login_required
 from .events import track_article_interaction
+from datetime import datetime
 
 # Create Blueprint
 analytics_bp = Blueprint('analytics', __name__)
@@ -42,12 +44,14 @@ def track_article_click():
         if article_url and brief_query and current_user.is_authenticated:
             # Track the article click
             print(f"Tracking article click for user {current_user.id}")
-            track_article_interaction(
+            tracking_success = track_article_interaction(
                 user_id=current_user.id,
                 brief_query=brief_query,
                 article_url=article_url,
                 action='click'
             )
+            if not tracking_success:
+                print(f"Warning: Failed to track article click for URL: {article_url}")
         else:
             if not current_user.is_authenticated:
                 print("Article click not tracked: User not authenticated")
@@ -100,7 +104,7 @@ def track_article_view():
         if article_url and brief_query and current_user.is_authenticated:
             # Track the article view
             print(f"Tracking article view for user {current_user.id}, time spent: {time_spent}s")
-            track_article_interaction(
+            tracking_success = track_article_interaction(
                 user_id=current_user.id,
                 brief_query=brief_query,
                 article_url=article_url,
@@ -108,7 +112,11 @@ def track_article_view():
                 time_spent=time_spent
             )
             
-            return jsonify({'status': 'success'})
+            if tracking_success:
+                return jsonify({'status': 'success'})
+            else:
+                print(f"Warning: Failed to track article view for URL: {article_url}")
+                return jsonify({'status': 'warning', 'message': 'Analytics event recorded but not confirmed'}), 200
         else:
             if not current_user.is_authenticated:
                 print("Article view not tracked: User not authenticated")
@@ -160,6 +168,115 @@ def debug_analytics():
         })
     except Exception as e:
         print(f"Error in debug endpoint: {str(e)}")
+        traceback.print_exc()
+        return jsonify({
+            'status': 'error',
+            'message': f'Error: {str(e)}'
+        }), 500
+
+@analytics_bp.route('/test-db-write')
+@login_required
+def test_db_write():
+    """Test endpoint to verify we can write to the database."""
+    try:
+        from .database import get_db
+        db_path = current_app.config.get('ANALYTICS_DB_PATH', 'Not set')
+        
+        # Test 1: Check if we can connect directly with SQLite
+        direct_conn = None
+        direct_conn_error = None
+        try:
+            direct_conn = sqlite3.connect(db_path)
+            # Try a simple query
+            cursor = direct_conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        except Exception as e:
+            direct_conn_error = str(e)
+        finally:
+            if direct_conn:
+                direct_conn.close()
+        
+        # Test 2: Check if we can get the connection through our utility
+        db = get_db()
+        if not db:
+            return jsonify({
+                'status': 'error',
+                'message': 'Could not connect to analytics database through get_db()',
+                'direct_connection': {
+                    'success': direct_conn_error is None,
+                    'error': direct_conn_error
+                },
+                'database_path': db_path,
+                'path_exists': os.path.exists(db_path) if db_path != 'Not set' else False,
+                'directory_exists': os.path.exists(os.path.dirname(db_path)) if db_path != 'Not set' else False
+            }), 500
+        
+        # Test 3: Try a write operation
+        test_table = """
+        CREATE TABLE IF NOT EXISTS analytics_test (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            test_data TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        test_result = {
+            'table_creation': False,
+            'data_insertion': False,
+            'data_retrieval': False,
+            'errors': []
+        }
+        
+        try:
+            # Create test table
+            db.execute(test_table)
+            db.commit()
+            test_result['table_creation'] = True
+            
+            # Insert test data
+            test_data = f"Test data from {current_user.id} at {datetime.utcnow().isoformat()}"
+            db.execute("INSERT INTO analytics_test (test_data) VALUES (?)", (test_data,))
+            db.commit()
+            test_result['data_insertion'] = True
+            
+            # Read test data
+            cursor = db.execute("SELECT test_data FROM analytics_test ORDER BY timestamp DESC LIMIT 1")
+            retrieved_data = cursor.fetchone()
+            if retrieved_data and retrieved_data[0]:
+                test_result['data_retrieval'] = True
+        except Exception as e:
+            test_result['errors'].append(str(e))
+            traceback.print_exc()
+
+        # Test 4: Check file permissions
+        file_permissions = None
+        if db_path != 'Not set' and os.path.exists(db_path):
+            try:
+                import stat
+                st = os.stat(db_path)
+                file_permissions = {
+                    'mode': stat.filemode(st.st_mode),
+                    'owner': st.st_uid,
+                    'group': st.st_gid,
+                    'size': st.st_size,
+                }
+            except Exception as e:
+                file_permissions = {'error': str(e)}
+        
+        return jsonify({
+            'status': 'success',
+            'database_path': db_path,
+            'path_exists': os.path.exists(db_path) if db_path != 'Not set' else False,
+            'direct_connection': {
+                'success': direct_conn_error is None,
+                'error': direct_conn_error
+            },
+            'file_permissions': file_permissions,
+            'test_results': test_result,
+            'user_id': current_user.id if current_user.is_authenticated else None
+        })
+    except Exception as e:
+        print(f"Error in test-db-write endpoint: {str(e)}")
         traceback.print_exc()
         return jsonify({
             'status': 'error',

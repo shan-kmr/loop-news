@@ -70,7 +70,9 @@ def callback():
             print(f"User {user.email} logged in successfully.")
             
             # Track login event for analytics
-            track_user_session(user.id, 'login')
+            tracking_success = track_user_session(user.id, 'login')
+            if not tracking_success:
+                print(f"Warning: Failed to track login event for user {user.id}")
 
             # Redirect to the main application page after login (news.index)
             next_url = session.pop('next', url_for('news.index'))
@@ -94,7 +96,9 @@ def logout():
     if current_user and hasattr(current_user, 'email'):
          print(f"Logging out user: {current_user.email}")
          # Track logout event for analytics
-         track_user_session(current_user.id, 'logout')
+         tracking_success = track_user_session(current_user.id, 'logout')
+         if not tracking_success:
+             print(f"Warning: Failed to track logout event for user {current_user.id}")
     else:
          print("Logging out user (no email info available).")
     logout_user()

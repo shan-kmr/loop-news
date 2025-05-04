@@ -42,10 +42,14 @@ def track_user_session(user_id, action):
         action: Either 'login' or 'logout'
     """
     if not current_app.config.get('ANALYTICS_ENABLED', True):
-        return
+        return False
 
     try:
         db = get_db()
+        if not db:
+            print(f"Cannot track user session ({action}): No database connection")
+            return False
+            
         session_id = _get_session_id()
         client_info = _get_client_info()
         now = datetime.utcnow().isoformat()
@@ -72,11 +76,22 @@ def track_user_session(user_id, action):
                 (now, user_id, session_id)
             )
         
+        # Explicitly commit the transaction
         db.commit()
         print(f"Successfully tracked user session: {action}")
+        return True
     except Exception as e:
         print(f"Error tracking user session ({action}): {str(e)}")
         traceback.print_exc()
+        
+        # Attempt to rollback in case of error
+        try:
+            if 'db' in locals() and db:
+                db.rollback()
+        except:
+            pass
+            
+        return False
 
 def track_brief_interaction(user_id, brief_query, action, parameters=None):
     """
@@ -89,10 +104,14 @@ def track_brief_interaction(user_id, brief_query, action, parameters=None):
         parameters: Optional dict of parameters (will be stored as JSON)
     """
     if not current_app.config.get('ANALYTICS_ENABLED', True):
-        return
+        return False
 
     try:
         db = get_db()
+        if not db:
+            print(f"Cannot track brief interaction ({action}): No database connection")
+            return False
+            
         session_id = _get_session_id()
         parameters_json = json.dumps(parameters) if parameters else None
         
@@ -107,11 +126,38 @@ def track_brief_interaction(user_id, brief_query, action, parameters=None):
             (user_id, session_id, brief_query, action, parameters_json)
         )
         
+        # Explicitly commit the transaction
         db.commit()
-        print(f"Successfully tracked brief interaction: {action}")
+        
+        # Verify the insert was successful
+        cursor = db.execute(
+            """
+            SELECT COUNT(*) as count FROM brief_interactions 
+            WHERE user_id = ? AND brief_query = ? AND action = ?
+            ORDER BY created_at DESC LIMIT 1
+            """, 
+            (user_id, brief_query, action)
+        )
+        count = cursor.fetchone()['count']
+        
+        if count > 0:
+            print(f"Successfully tracked brief interaction: {action}")
+            return True
+        else:
+            print(f"WARNING: Brief interaction may not have been recorded: {action}")
+            return False
     except Exception as e:
         print(f"Error tracking brief interaction ({action}): {str(e)}")
         traceback.print_exc()
+        
+        # Attempt to rollback in case of error
+        try:
+            if 'db' in locals() and db:
+                db.rollback()
+        except:
+            pass
+            
+        return False
 
 def track_article_interaction(user_id, brief_query, article_url, action, time_spent=None):
     """
@@ -125,10 +171,14 @@ def track_article_interaction(user_id, brief_query, article_url, action, time_sp
         time_spent: Optional time spent in seconds
     """
     if not current_app.config.get('ANALYTICS_ENABLED', True):
-        return
+        return False
 
     try:
         db = get_db()
+        if not db:
+            print(f"Cannot track article interaction ({action}): No database connection")
+            return False
+            
         session_id = _get_session_id()
         
         print(f"Tracking article interaction: {action} for article '{article_url}' by user {user_id}")
@@ -142,11 +192,38 @@ def track_article_interaction(user_id, brief_query, article_url, action, time_sp
             (user_id, session_id, brief_query, article_url, action, time_spent)
         )
         
+        # Explicitly commit the transaction
         db.commit()
-        print(f"Successfully tracked article interaction: {action}")
+        
+        # Verify the insert was successful
+        cursor = db.execute(
+            """
+            SELECT COUNT(*) as count FROM article_interactions 
+            WHERE user_id = ? AND article_url = ? AND action = ?
+            ORDER BY created_at DESC LIMIT 1
+            """, 
+            (user_id, article_url, action)
+        )
+        count = cursor.fetchone()['count']
+        
+        if count > 0:
+            print(f"Successfully tracked article interaction: {action}")
+            return True
+        else:
+            print(f"WARNING: Article interaction may not have been recorded: {action}")
+            return False
     except Exception as e:
         print(f"Error tracking article interaction ({action}): {str(e)}")
         traceback.print_exc()
+        
+        # Attempt to rollback in case of error
+        try:
+            if 'db' in locals() and db:
+                db.rollback()
+        except:
+            pass
+            
+        return False
 
 def track_search_behavior(user_id, query, filters=None, results_count=None):
     """
@@ -159,10 +236,14 @@ def track_search_behavior(user_id, query, filters=None, results_count=None):
         results_count: Optional count of results returned
     """
     if not current_app.config.get('ANALYTICS_ENABLED', True):
-        return
+        return False
 
     try:
         db = get_db()
+        if not db:
+            print(f"Cannot track search behavior: No database connection")
+            return False
+            
         session_id = _get_session_id()
         filters_json = json.dumps(filters) if filters else None
         
@@ -177,8 +258,35 @@ def track_search_behavior(user_id, query, filters=None, results_count=None):
             (user_id, session_id, query, filters_json, results_count)
         )
         
+        # Explicitly commit the transaction
         db.commit()
-        print(f"Successfully tracked search behavior")
+        
+        # Verify the insert was successful
+        cursor = db.execute(
+            """
+            SELECT COUNT(*) as count FROM search_behaviors 
+            WHERE user_id = ? AND query = ?
+            ORDER BY created_at DESC LIMIT 1
+            """, 
+            (user_id, query)
+        )
+        count = cursor.fetchone()['count']
+        
+        if count > 0:
+            print(f"Successfully tracked search behavior for query: {query}")
+            return True
+        else:
+            print(f"WARNING: Search behavior may not have been recorded for query: {query}")
+            return False
     except Exception as e:
         print(f"Error tracking search behavior: {str(e)}")
-        traceback.print_exc() 
+        traceback.print_exc()
+        
+        # Attempt to rollback in case of error
+        try:
+            if 'db' in locals() and db:
+                db.rollback()
+        except:
+            pass
+            
+        return False 

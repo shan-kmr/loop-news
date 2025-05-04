@@ -68,13 +68,21 @@ def get_db():
                 return None
                 
             # Ensure directory exists
-            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            full_path = os.path.abspath(db_path)
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
             
-            # Create the database connection with isolation level
-            g.analytics_db = sqlite3.connect(db_path, isolation_level=None)  # autocommit mode
+            # Create the database connection - use normal isolation level, not autocommit
+            g.analytics_db = sqlite3.connect(full_path)
             g.analytics_db.row_factory = sqlite3.Row
             
-            print(f"Database connection established at {db_path}")
+            # Enable foreign keys (good practice)
+            g.analytics_db.execute("PRAGMA foreign_keys = ON")
+            
+            # Test connection with simple query
+            test_cursor = g.analytics_db.execute("SELECT 1")
+            test_cursor.fetchone()
+            
+            print(f"Database connection established and tested at {full_path}")
         
         return g.analytics_db
     except Exception as e:
@@ -96,10 +104,16 @@ def close_db(e=None):
 def init_db(app):
     """Initialize the database with the schema."""
     try:
-        print(f"Initializing analytics database at {app.config.get('ANALYTICS_DB_PATH')}")
+        # Get the database path from app config
+        db_path = app.config.get('ANALYTICS_DB_PATH')
+        if not db_path:
+            print("ERROR: ANALYTICS_DB_PATH not set in app config for initialization")
+            return False
+            
+        print(f"Initializing analytics database at {db_path}")
         
         # Ensure the instance directory exists
-        os.makedirs(app.instance_path, exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
         
         with app.app_context():
             db = get_db()
@@ -111,7 +125,16 @@ def init_db(app):
             for table_sql in SCHEMA:
                 db.execute(table_sql)
             
+            # Explicitly commit changes
             db.commit()
+            
+            # Verify tables were created by checking counts
+            for table in ['user_sessions', 'brief_interactions', 'article_interactions', 'search_behaviors']:
+                cursor = db.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")
+                if not cursor.fetchone():
+                    print(f"ERROR: Table {table} was not created properly")
+                    return False
+            
             print("Analytics database initialized successfully.")
             return True
     except Exception as e:

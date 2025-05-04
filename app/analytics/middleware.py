@@ -62,7 +62,9 @@ def setup_request_tracking(app):
                         'similarity_threshold': request.form.get('similarity_threshold')
                     }
                     print(f"Tracking search behavior: {query}")
-                    track_search_behavior(current_user.id, query, filters)
+                    tracking_success = track_search_behavior(current_user.id, query, filters)
+                    if not tracking_success:
+                        print(f"Warning: Failed to track search behavior for query: {query}")
             
             # Track brief interactions
             if request.endpoint == 'news.index' and request.method == 'POST':
@@ -74,17 +76,23 @@ def setup_request_tracking(app):
                         'similarity_threshold': request.form.get('similarity_threshold')
                     }
                     print(f"Tracking brief creation: {query}")
-                    track_brief_interaction(current_user.id, query, 'create', parameters)
+                    tracking_success = track_brief_interaction(current_user.id, query, 'create', parameters)
+                    if not tracking_success:
+                        print(f"Warning: Failed to track brief creation for query: {query}")
             elif request.endpoint == 'news.history_item' and request.view_args:
                 query = request.view_args.get('query', '')
                 if query:
                     print(f"Tracking brief view: {query}")
-                    track_brief_interaction(current_user.id, query, 'view')
+                    tracking_success = track_brief_interaction(current_user.id, query, 'view')
+                    if not tracking_success:
+                        print(f"Warning: Failed to track brief view for query: {query}")
             elif request.endpoint == 'news.delete_history_item_api' and request.view_args:
                 query = request.view_args.get('query', '')
                 if query:
                     print(f"Tracking brief deletion: {query}")
-                    track_brief_interaction(current_user.id, query, 'delete')
+                    tracking_success = track_brief_interaction(current_user.id, query, 'delete')
+                    if not tracking_success:
+                        print(f"Warning: Failed to track brief deletion for query: {query}")
         except Exception as e:
             print(f"Error in before_request analytics middleware: {str(e)}")
             traceback.print_exc()
