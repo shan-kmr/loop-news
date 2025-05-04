@@ -65,11 +65,11 @@ def setup_request_tracking(app):
                 }
                 track_brief_interaction(current_user.id, query, 'create', parameters)
         elif request.endpoint == 'news.history_item':
-            query = kwargs.get('query', '')
+            query = request.view_args.get('query', '')
             if query:
                 track_brief_interaction(current_user.id, query, 'view')
         elif request.endpoint == 'news.delete_history_item_api':
-            query = kwargs.get('query', '')
+            query = request.view_args.get('query', '')
             if query:
                 track_brief_interaction(current_user.id, query, 'delete')
                 
