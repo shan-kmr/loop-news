@@ -4,8 +4,7 @@ from flask_login import LoginManager, login_user, logout_user, login_required, c
 
 from .oauth import oauth # Import the initialized OAuth object
 from ..models import User
-# Remove whitelist import as we won't need it
-# from .whitelist import is_email_allowed 
+from .whitelist import is_email_allowed 
 
 
 # Setup LoginManager
@@ -43,7 +42,13 @@ def callback():
             user_email = user_info['email']
             print(f"OAuth successful for: {user_email}")
 
-            # Removed whitelist check - now all Google users can access the app
+            # --- Whitelist Check (using imported function) ---
+            if not is_email_allowed(user_email):
+                print(f"Access denied for {user_email}: Not in allowed list.")
+                flash('Your email is not on the allowed list. Please request access.', 'error')
+                return redirect(url_for('news.index'))
+
+            print(f"Access granted for allowed user: {user_email}")
 
             # Get or create the user object using email as ID
             user = User.get(user_email)
