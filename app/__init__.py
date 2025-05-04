@@ -2,7 +2,6 @@ import os
 import threading
 from flask import Flask
 from flask_login import LoginManager
-from flask_wtf.csrf import CSRFProtect
 
 # Import configurations and extensions
 # from config import Config # Assuming config.py is at root
@@ -41,10 +40,6 @@ def create_app(config_object='config.Config'): # Use a default config path
     # Initialize Flask extensions
     login_manager.init_app(app)
     print("LoginManager initialized.")
-    
-    # Initialize CSRF protection
-    csrf = CSRFProtect(app)
-    print("CSRF protection initialized.")
     
     init_oauth(app) # Initialize OAuth provider
     print("OAuth initialized.")

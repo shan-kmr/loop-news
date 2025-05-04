@@ -13,7 +13,6 @@ from ..utils.history import (
 )
 from ..utils.grouping import group_articles_by_topic 
 from ..utils.text import extract_age_in_seconds, is_valid_summary
-from ..auth.whitelist import add_email_to_waitlist # For request access
 
 # Create Blueprint
 news_bp = Blueprint('news', __name__)
@@ -531,23 +530,9 @@ def request_access():
     if not email or '@' not in email:
         flash('Please enter a valid email address.', 'error')
         return redirect(url_for('news.index')) # Redirect back
-        
-    # Use the function from auth.whitelist
-    success = add_email_to_waitlist(email)
     
-    if success == True:
-        flash('Your access request has been submitted. You will be notified by email when access is granted.', 'success')
-    elif success == False:
-         # Check if it failed because already allowed or already waitlisted
-         from ..auth.whitelist import is_email_allowed
-         if is_email_allowed(email):
-             flash('This email address already has access. Please login.', 'info')
-         else:
-              flash('Your email is already on our waitlist. Please wait for approval.', 'info')
-    else:
-         # Should not happen based on current add_email_to_waitlist logic, but handle defensively
-         flash('An unexpected issue occurred. Please try again later.', 'error')
-         
+    # Since we've removed the whitelist restrictions, simply inform the user they can login directly
+    flash('No access request needed. You can login directly with your Google account.', 'info')
     return redirect(url_for('news.raison_detre')) # Redirect to raison detre page
 
 @news_bp.route('/raison-detre', methods=['GET']) 
@@ -584,8 +569,8 @@ def raison_detre():
                 'content': 'Loop lets you track up to 3 topics simultaneously. For each topic, we gather the latest news, organize articles by day, and generate concise summaries. The timeline view shows you how stories evolve over time, helping you understand not just what happened, but how events unfolded and are connected.'
             },
             {
-                'title': 'Limited Access Model',
-                'content': 'We currently operate on an invitation-based model to ensure quality of service. If you\'d like to use Loop, please request access using the link in the navigation bar. We\'ll notify you when your account is approved.'
+                'title': 'Open Access',
+                'content': 'Loop is open to anyone with a Google account. Simply log in to start tracking your topics of interest.'
             }
         ]
     }
