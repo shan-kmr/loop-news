@@ -2,8 +2,9 @@
 Middleware functions for analytics.
 """
 
+import traceback
 from functools import wraps
-from flask import request, g
+from flask import request, g, current_app
 from flask_login import current_user
 from .events import track_search_behavior, track_brief_interaction, track_article_interaction
 
@@ -37,41 +38,56 @@ def setup_request_tracking(app):
     @app.before_request
     def before_request():
         """Handle tracking before each request."""
-        if not current_user.is_authenticated:
-            return
+        try:
+            if not current_app.config.get('ANALYTICS_ENABLED', True):
+                return
+                
+            if not current_user.is_authenticated:
+                return
+                
+            # Log request details for debugging
+            print(f"Analytics tracking request: {request.method} {request.path} | Endpoint: {request.endpoint}")
+            print(f"Route params: {request.view_args}")
+                
+            # Store request start time for duration calculation
+            g.request_start_time = g.get('request_start_time', None)
             
-        # Store request start time for duration calculation
-        g.request_start_time = g.get('request_start_time', None)
-        
-        # Track search queries
-        if request.endpoint == 'news.index' and request.method == 'POST':
-            query = request.form.get('query', '').strip().lower()
-            if query:
-                filters = {
-                    'count': request.form.get('count'),
-                    'freshness': request.form.get('freshness'),
-                    'similarity_threshold': request.form.get('similarity_threshold')
-                }
-                track_search_behavior(current_user.id, query, filters)
-        
-        # Track brief interactions
-        if request.endpoint == 'news.index' and request.method == 'POST':
-            query = request.form.get('query', '').strip().lower()
-            if query:
-                parameters = {
-                    'count': request.form.get('count'),
-                    'freshness': request.form.get('freshness'),
-                    'similarity_threshold': request.form.get('similarity_threshold')
-                }
-                track_brief_interaction(current_user.id, query, 'create', parameters)
-        elif request.endpoint == 'news.history_item':
-            query = request.view_args.get('query', '')
-            if query:
-                track_brief_interaction(current_user.id, query, 'view')
-        elif request.endpoint == 'news.delete_history_item_api':
-            query = request.view_args.get('query', '')
-            if query:
-                track_brief_interaction(current_user.id, query, 'delete')
+            # Track search queries
+            if request.endpoint == 'news.index' and request.method == 'POST':
+                query = request.form.get('query', '').strip().lower()
+                if query:
+                    filters = {
+                        'count': request.form.get('count'),
+                        'freshness': request.form.get('freshness'),
+                        'similarity_threshold': request.form.get('similarity_threshold')
+                    }
+                    print(f"Tracking search behavior: {query}")
+                    track_search_behavior(current_user.id, query, filters)
+            
+            # Track brief interactions
+            if request.endpoint == 'news.index' and request.method == 'POST':
+                query = request.form.get('query', '').strip().lower()
+                if query:
+                    parameters = {
+                        'count': request.form.get('count'),
+                        'freshness': request.form.get('freshness'),
+                        'similarity_threshold': request.form.get('similarity_threshold')
+                    }
+                    print(f"Tracking brief creation: {query}")
+                    track_brief_interaction(current_user.id, query, 'create', parameters)
+            elif request.endpoint == 'news.history_item' and request.view_args:
+                query = request.view_args.get('query', '')
+                if query:
+                    print(f"Tracking brief view: {query}")
+                    track_brief_interaction(current_user.id, query, 'view')
+            elif request.endpoint == 'news.delete_history_item_api' and request.view_args:
+                query = request.view_args.get('query', '')
+                if query:
+                    print(f"Tracking brief deletion: {query}")
+                    track_brief_interaction(current_user.id, query, 'delete')
+        except Exception as e:
+            print(f"Error in before_request analytics middleware: {str(e)}")
+            traceback.print_exc()
                 
     @app.after_request
     def after_request(response):
