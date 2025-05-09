@@ -13,7 +13,6 @@ from ..utils.history import (
 )
 from ..utils.grouping import group_articles_by_topic 
 from ..utils.text import extract_age_in_seconds, is_valid_summary
-from ..auth.whitelist import add_email_to_waitlist # For request access
 
 # Create Blueprint
 news_bp = Blueprint('news', __name__)
@@ -522,33 +521,6 @@ def clear_history_api():
     print(f"Cleared history for user {current_user.email}")
     flash('All briefs cleared.', 'success')
     return jsonify({'success': True})
-
-@news_bp.route('/request-access', methods=['POST']) # Changed to POST only
-def request_access():
-    """Handle the request access form submission."""
-    email = request.form.get('email', '').strip().lower()
-        
-    if not email or '@' not in email:
-        flash('Please enter a valid email address.', 'error')
-        return redirect(url_for('news.index')) # Redirect back
-        
-    # Use the function from auth.whitelist
-    success = add_email_to_waitlist(email)
-    
-    if success == True:
-        flash('Your access request has been submitted. You will be notified by email when access is granted.', 'success')
-    elif success == False:
-         # Check if it failed because already allowed or already waitlisted
-         from ..auth.whitelist import is_email_allowed
-         if is_email_allowed(email):
-             flash('This email address already has access. Please login.', 'info')
-         else:
-              flash('Your email is already on our waitlist. Please wait for approval.', 'info')
-    else:
-         # Should not happen based on current add_email_to_waitlist logic, but handle defensively
-         flash('An unexpected issue occurred. Please try again later.', 'error')
-         
-    return redirect(url_for('news.raison_detre')) # Redirect to raison detre page
 
 @news_bp.route('/raison-detre', methods=['GET']) 
 def raison_detre():

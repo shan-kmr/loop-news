@@ -4,7 +4,6 @@ from flask_login import LoginManager, login_user, logout_user, login_required, c
 
 from .oauth import oauth # Import the initialized OAuth object
 from ..models import User
-from .whitelist import is_email_allowed 
 
 
 # Setup LoginManager
@@ -35,34 +34,25 @@ def callback():
     try:
         # Fetch the token from Google
         token = oauth.google.authorize_access_token()
-        # Fetch user info using the token (old method)
+        # Fetch user info using the token
         user_info = token.get('userinfo')
 
         if user_info and 'email' in user_info:
             user_email = user_info['email']
             print(f"OAuth successful for: {user_email}")
 
-            # --- Whitelist Check (using imported function) ---
-            if not is_email_allowed(user_email):
-                print(f"Access denied for {user_email}: Not in allowed list.")
-                flash('Your email is not on the allowed list. Please request access.', 'error')
-                return redirect(url_for('news.index'))
-
-            print(f"Access granted for allowed user: {user_email}")
-
             # Get or create the user object using email as ID
             user = User.get(user_email)
             if not user:
                 print(f"User {user_email} not found locally, creating new user record.")
                 user = User.create(
-                    id=user_email, # Use email as ID
+                    id=user_email,
                     name=user_info.get('name'),
                     email=user_email,
                     profile_pic=user_info.get('picture')
                 )
-                # No user.save() needed as User.create handles persistence
             else:
-                 print(f"Found existing user: {user_email}")
+                print(f"Found existing user: {user_email}")
 
             # Log the user in using Flask-Login
             login_user(user)
@@ -77,16 +67,14 @@ def callback():
         return redirect(url_for('news.index'))
 
     except Exception as e:
-        print(f"Error during OAuth callback: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error during OAuth callback: {e}")
         flash('Authentication failed. Please try again.', 'error')
         return redirect(url_for('news.index')) # Redirect to index on error
 
 @auth_bp.route('/logout')
 @login_required # Ensure user is logged in before they can log out
 def logout():
-    """Log the current user out."""
+    """Log out the current user."""
     if current_user and hasattr(current_user, 'email'):
          print(f"Logging out user: {current_user.email}")
     else:
