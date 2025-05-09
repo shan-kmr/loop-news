@@ -12,7 +12,9 @@ GOOGLE_DISCOVERY_URL = "https://accounts.google.com/.well-known/openid-configura
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "BSARtNDwLSo6fXyitbrM3-vdUY1H6rV")
 
 # OpenAI configuration
+
 OPENAI_API_KEY = "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"
+
 OPENAI_MODEL = "gpt-4.1-nano"
 
 # Model provider: "openai" or "llama"
