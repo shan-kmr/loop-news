@@ -1207,67 +1207,14 @@
     <!-- Modal for adding new briefs -->
     <div id="newBriefModal" class="modal">
         <div class="modal-content">
-            <h2 class="modal-title">add new brief</h2>
-            {% if user.is_authenticated %}
-                {% if history_entries|length >= 3 %}
-                    <p style="margin-bottom: 20px; color: #ff3b30;">You've reached the maximum of 3 briefs. Please remove one before adding another.</p>
-                    <div class="modal-buttons">
-                        <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">close</button>
-                    </div>
-                {% else %}
-                    <form method="post" action="/" id="modalSearchForm">
-                        <input type="text" name="query" placeholder="add a topic" class="search-box" required>
-                        <div class="search-options" style="display: none;">
-                            <select name="count" class="option-select">
-                                <option value="10">10 results</option>
-                                <option value="20">20 results</option>
-                                <option value="30">30 results</option>
-                                <option value="50" selected>50 results</option>
-                            </select>
-                            <select name="freshness" class="option-select">
-                                <option value="pd">past day</option>
-                                <option value="pw">past week</option>
-                                <option value="pm">past month</option>
-                                <option value="py" selected>past year</option>
-                            </select>
-                            <select name="similarity_threshold" class="option-select">
-                                <option value="0.2">low similarity</option>
-                                <option value="0.3">medium similarity</option>
-                                <option value="0.4" selected>high similarity</option>
-                            </select>
-                            <input type="hidden" name="force_refresh" value="false">
-                        </div>
-                        <div class="modal-buttons">
-                            <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">cancel</button>
-                            <div class="submit-button-container">
-                                <button type="submit" class="modal-button submit-button" id="submitBriefButton">add brief</button>
-                                <div class="loading-spinner" id="briefLoadingSpinner"></div>
-                            </div>
-                        </div>
-                    </form>
-                {% endif %}
-            {% else %}
-                <p style="margin-bottom: 20px;">You need to <a href="{{ url_for('auth.login') }}" style="color: var(--accent-color);">login</a> to add briefs.</p>
+            <h2 class="modal-title">new brief</h2>
+            <form method="post" action="{{ url_for('news.index') }}" id="newBriefForm">
+                <input type="text" name="query" placeholder="enter topic to track" class="search-box" required>
                 <div class="modal-buttons">
-                    <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">close</button>
-                    <a href="{{ url_for('auth.login') }}" class="modal-button submit-button" style="display: inline-block; text-align: center; text-decoration: none; margin-right: 10px;">login</a>
-                    <a href="#" onclick="openRequestAccessModal(); closeNewBriefModal(); return false;" class="modal-button submit-button" style="display: inline-block; text-align: center; text-decoration: none;">request access</a>
-                </div>
-            {% endif %}
-        </div>
-    </div>
-    
-    <!-- Modal for requesting access -->
-    <div id="requestAccessModal" class="modal">
-        <div class="modal-content">
-            <h2 class="modal-title">request access</h2>
-            <form method="post" action="{{ url_for('news.request_access') }}" id="requestAccessForm">
-                <input type="email" name="email" placeholder="your email address" class="search-box" required>
-                <div class="modal-buttons">
-                    <button type="button" class="modal-button cancel-button" onclick="closeRequestAccessModal()">cancel</button>
+                    <button type="button" class="modal-button cancel-button" onclick="closeNewBriefModal()">cancel</button>
                     <div class="submit-button-container">
-                        <button type="submit" class="modal-button submit-button" id="submitAccessButton">submit request</button>
-                        <div class="loading-spinner" id="accessLoadingSpinner"></div>
+                        <button type="submit" class="modal-button submit-button" id="submitBriefButton">create brief</button>
+                        <div class="loading-spinner" id="briefLoadingSpinner"></div>
                     </div>
                 </div>
             </form>
@@ -1347,14 +1294,6 @@
         
         function closeNewBriefModal() {
             document.getElementById('newBriefModal').style.display = 'none';
-        }
-        
-        function openRequestAccessModal() {
-            document.getElementById('requestAccessModal').style.display = 'flex';
-        }
-        
-        function closeRequestAccessModal() {
-            document.getElementById('requestAccessModal').style.display = 'none';
         }
         
         function closeNotificationModal() {
@@ -1461,14 +1400,10 @@
             // Close modal if clicked outside
             window.onclick = function(event) {
                 const briefModal = document.getElementById('newBriefModal');
-                const accessModal = document.getElementById('requestAccessModal');
                 const notificationModal = document.getElementById('notificationModal');
                 
                 if (event.target == briefModal) {
                     closeNewBriefModal();
-                }
-                if (event.target == accessModal) {
-                    closeRequestAccessModal();
                 }
                 if (event.target == notificationModal) {
                     closeNotificationModal();
@@ -1476,7 +1411,7 @@
             }
             
             // Show loading spinner when form is submitted
-            const searchForm = document.getElementById('modalSearchForm');
+            const searchForm = document.getElementById('newBriefForm');
             const submitButton = document.getElementById('submitBriefButton');
             const loadingSpinner = document.getElementById('briefLoadingSpinner');
             const cancelButton = document.querySelector('.cancel-button');
@@ -1499,27 +1434,6 @@
                     
                     // Let the form submission proceed
                     return true;
-                });
-            }
-            
-            // Show loading spinner when access request form is submitted
-            const accessForm = document.getElementById('requestAccessForm');
-            const accessButton = document.getElementById('submitAccessButton');
-            const accessSpinner = document.getElementById('accessLoadingSpinner');
-            
-            if (accessForm) {
-                accessForm.addEventListener('submit', function() {
-                    // Show spinner
-                    accessSpinner.style.display = 'block';
-                    
-                    // Disable buttons
-                    accessButton.disabled = true;
-                    accessButton.style.opacity = '0.7';
-                    accessButton.textContent = 'submitting...';
-                    
-                    const accessCancelButton = accessForm.querySelector('.cancel-button');
-                    accessCancelButton.disabled = true;
-                    accessCancelButton.style.opacity = '0.7';
                 });
             }
         });

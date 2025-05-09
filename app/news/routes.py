@@ -554,10 +554,6 @@ def raison_detre():
             {
                 'title': 'How It Works',
                 'content': 'Loop lets you track up to 3 topics simultaneously. For each topic, we gather the latest news, organize articles by day, and generate concise summaries. The timeline view shows you how stories evolve over time, helping you understand not just what happened, but how events unfolded and are connected.'
-            },
-            {
-                'title': 'Limited Access Model',
-                'content': 'We currently operate on an invitation-based model to ensure quality of service. If you\'d like to use Loop, please request access using the link in the navigation bar. We\'ll notify you when your account is approved.'
             }
         ]
     }
